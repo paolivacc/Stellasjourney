@@ -1,0 +1,2116 @@
+<html><head>
+    <title>ft_skypot</title>
+    <meta charset="utf-8">
+    <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAMtJREFUOI2tk6EOwjAURU8X3PgFDJIEy2dMzCHnltTi0HPYJnOTuIl9xiwJEsMvMD0EMPq6NoPANUvfee/mdnmFH6Wcc/8tUzbc7PXQ0RZGcA8DUMqFAHlscFV2elRrC8PMLeaxIUtHvVAbyk4P5i/D6KNhIEv9fEjgwqqWw/bXa2Crqh8Rb5frs9IEk0X+8lu7dXhYJCg7DbX8QXaiSQPfIMDhlDBfLoIGk1eYkkhgbRjucoWYWGXk/verbQLA+diMmKffqx75iP6vO35pQ4JP0uRCAAAAAElFTkSuQmCC">
+    <!-- styles-->
+    <style id="base-style">
+/* prevent weird highlights https://stackoverflow.com/questions/21003535/ */
+.no-select {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}
+
+/* hidden elements should be hidden regardless of their display style */
+[hidden] { display: none !important; }
+
+/* default to width/height including padding and border */
+* { box-sizing: border-box; }
+
+/* used dynamically to prevent or cancel smooth transitions */
+.skip-transition { transition: none !important; }
+
+/* make buttons inherit font */ 
+button { font-family: inherit; font-size: inherit; }
+
+/* clickable things should use this cursor imo */
+button, a, summary { cursor: pointer; }
+/* but disabled buttons aren't clickable */
+button[disabled] { cursor: not-allowed; }
+
+/* crisp pixelart */
+canvas, img {
+    image-rendering: -moz-crisp-edges;
+    image-rendering: -webkit-crisp-edges;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+/* default to ignoring margins that aren't between siblings */
+/* *:first-child { margin-top: 0; }
+*:last-child { margin-bottom: 0; } */
+
+h2:first-child { margin-top: 0; }
+
+
+
+    </style>
+    <style id="player-style">html, body {
+    width: 100vw; height: 100vh;
+    margin: 0; padding: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: row;
+}
+
+#content {
+    position: relative; overflow: hidden; /* clip things */
+    flex: 1;
+    background: black;
+}
+
+.scene {
+    position: absolute; transform-origin: 0 0;
+    width: 160px; height: 100px;
+    outline: 1px dotted rgb(255 255 255 / 5%);
+}
+
+.double-resolution .scene {
+    width: 320px; height: 200px;
+}
+
+.player-canvas {
+    cursor: none;
+    width: 640px; height: 400px;
+    outline: 1px solid #222222;
+}
+
+    </style>
+    
+    <!-- third party libraries-->
+    
+    <!-- scripts-->
+    <script id="blitsy.js">/**
+ * @param {number} width
+ * @param {number} height
+ * @returns {CanvasRenderingContext2D}
+ */
+function createRendering2D(width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    context.imageSmoothingEnabled = false;
+    return context;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {string | CanvasGradient | CanvasPattern | undefined} fillStyle
+ */
+function fillRendering2D(rendering, fillStyle = undefined) {
+    if (fillStyle !== undefined) {
+        const prevStyle = rendering.fillStyle;
+        rendering.fillStyle = fillStyle;
+        rendering.fillRect(0, 0, rendering.canvas.width, rendering.canvas.height);
+        rendering.fillStyle = prevStyle;
+    } else {
+        rendering.clearRect(0, 0, rendering.canvas.width, rendering.canvas.height);
+    }
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering
+ * @param {CanvasRenderingContext2D} destination
+ */
+function copyRendering2D(rendering, destination = undefined) {
+    destination ||= createRendering2D(rendering.canvas.width, rendering.canvas.height);
+    destination.canvas.width = rendering.canvas.width;
+    destination.canvas.height = rendering.canvas.height;
+    destination.drawImage(rendering.canvas, 0, 0);
+    return destination;
+}
+
+/**
+
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} width 
+ * @param {number} height 
+ */
+function resizeRendering2D(rendering, width, height) {
+    const copy = copyRendering2D(rendering);
+    rendering.canvas.width = width;
+    rendering.canvas.height = height;
+    rendering.drawImage(copy.canvas, 0, 0);
+}
+
+/**
+ * @callback pixelsAction
+ * @param {Uint32Array} pixels
+ */
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {pixelsAction} action 
+ */
+function withPixels(rendering, action) {
+    const imageData = rendering.getImageData(0, 0, rendering.canvas.width, rendering.canvas.height);
+    action(new Uint32Array(imageData.data.buffer));
+    rendering.putImageData(imageData, 0, 0);
+}
+
+/**
+ * @param {CanvasRenderingContext2D} mask 
+ * @param {string} style 
+ */
+function recolorMask(mask, style) {
+    const recolored = copyRendering2D(mask);
+    recolored.globalCompositeOperation = "source-in";
+    fillRendering2D(recolored, style);
+    return recolored;
+}
+
+/**
+ * @param {number} x0 
+ * @param {number} y0 
+ * @param {number} x1 
+ * @param {number} y1 
+ * @param {(x: number, y: number) => void} plot 
+ */
+// adapted from https://stackoverflow.com/a/34267311
+function lineplot(x0, y0, x1, y1, plot) {
+    x0 |= 0; y0 |= 0; x1 |= 0; y1 |= 0;
+
+    const steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+    if (steep) [x0, y0, x1, y1] = [y0, x0, y1, x1];
+
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const ystep = Math.sign(y1 - y0);
+    const xstep = Math.sign(x1 - x0);
+
+    let err = Math.floor(dx / 2);
+    let y = y0;
+
+    if (dx === 0 && dy === 0) {
+        plot(x0, y0);
+    }
+
+    for (let x = x0; x != (x1 + xstep); x += xstep) {
+        plot(steep ? y : x, steep ? x : y);
+        err -= dy;
+        if (err < 0) {
+            y += ystep;
+            err += dx;
+        }
+    }
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} x 
+ * @param {number} y 
+ * @param {number} color 
+ */
+function floodfill(rendering, x, y, color) {
+    const [width, height] = [rendering.canvas.width, rendering.canvas.height];
+    withPixels(rendering, pixels => {
+        const queue = [[x, y]];
+        const done = new Array(width * height);
+        const initial = pixels[y * width + x];
+
+        function enqueue(x, y) {
+            const within = x >= 0 && y >= 0 && x < width && y < height;
+
+            if (within && pixels[y * width + x] === initial && !done[y * width + x]) {
+                queue.push([x, y]);
+            }
+        }
+
+        while (queue.length > 0) {
+            const [x, y] = queue.pop();
+            pixels[y * width + x] = color;
+            done[y * width + x] = true;
+
+            enqueue(x - 1, y);
+            enqueue(x + 1, y);
+            enqueue(x, y - 1);
+            enqueue(x, y + 1);
+        }
+    });
+};
+
+/**
+ * @param {{r:number,g:number,b:number}} rgb 
+ */
+function rgbToHex(rgb) {
+    const packed = (0xFF000000 + (rgb.r << 16) + (rgb.g << 8) + (rgb.b << 0));
+    return "#" + packed.toString(16).substr(-6);
+}
+
+/**
+ * @param {string} hex 
+ * @param {number} alpha
+ */
+function hexToUint32(hex, alpha = undefined) {
+    if (hex.charAt(0) === '#') hex = hex.substring(1);
+    if (alpha === undefined && hex.length === 8) alpha = parseInt(hex.substr(6, 2), 16);
+    if (alpha === undefined) alpha = 255;
+    hex = hex.substr(4, 2) + hex.substr(2, 2) + hex.substr(0, 2);
+    return (parseInt(hex, 16) | (alpha << 24)) >>> 0;
+}
+
+/**
+ * @param {number} number
+ * @param {string} prefix 
+ */
+function numberToHex(number, prefix = '#') {
+    number = (number | 0xff000000) >>> 0;
+    let hex = number.toString(16).substring(2, 8);
+    hex = hex.substr(4, 2) + hex.substr(2, 2) + hex.substr(0, 2);
+    return prefix + hex;
+}
+
+const MASK_PALETTE = {
+    '_': hexToUint32('#000000', 0),
+    default: hexToUint32('#FFFFFF', 255),
+};
+
+/**
+ * @param {string} text 
+ * @param {Record<string, number>} palette 
+ * @returns {CanvasRenderingContext2D}
+ */
+function textToRendering2D(text, palette = MASK_PALETTE) {
+    text = text.trim();
+    const lines = text.split('\n').map((line) => [...line.trim()]);
+
+    const width = lines[0].length;
+    const height = lines.length;
+
+    const rendering = createRendering2D(width, height);
+    withPixels(rendering, (pixels) => {
+        lines.forEach((line, y) => line.forEach((char, x) => {
+            const color = palette[char];
+            pixels[y * width + x] = color !== undefined ? color : palette.default;
+        }));
+    });
+
+    return rendering;
+}
+
+/**
+ * @param {{ h: number, s: number, v: number }} hsv
+ */
+function HSVToRGB(hsv) {
+    const { h, s, v } = hsv;
+    let r, g, b;
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = (1 - s);
+    const q = (1 - f * s);
+    const t = (1 - (1 - f) * s);
+    switch (i % 6) {
+        case 0: r = 1, g = t, b = p; break;
+        case 1: r = q, g = 1, b = p; break;
+        case 2: r = p, g = 1, b = t; break;
+        case 3: r = p, g = q, b = 1; break;
+        case 4: r = t, g = p, b = 1; break;
+        case 5: r = 1, g = p, b = q; break;
+    }
+
+    r *= v * 255;
+    g *= v * 255;
+    b *= v * 255;
+
+    return { r, g, b };
+}
+
+/**
+ * @param {{ r: number, g: number, b: number }} rgb
+ */
+function RGBToHSV(rgb) {
+    const { r, g, b } = rgb;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b),
+        d = max - min,
+        h,
+        s = (max === 0 ? 0 : d / max),
+        v = max / 255;
+
+    switch (max) {
+        case min: h = 0; break;
+        case r: h = (g - b) + d * (g < b ? 6: 0); h /= 6 * d; break;
+        case g: h = (b - r) + d * 2; h /= 6 * d; break;
+        case b: h = (r - g) + d * 4; h /= 6 * d; break;
+    }
+
+    return { h, s, v };
+}
+
+function HSVToCone(hsv) {
+    const a = Math.PI * hsv.h;
+    const r = hsv.s * .5 * hsv.v;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    return { x, y, z: hsv.v };
+}
+
+
+function uint32ToRGB(uint32) {
+    return {
+        r: uint32 >>>  0 & 0xFF,
+        g: uint32 >>>  8 & 0xFF,
+        b: uint32 >>> 16 & 0xFF,
+        uint32,
+    };
+}
+
+function hexToRGB(hex) {
+    if (hex.charAt(0) === '#') hex = hex.substring(1);
+    return {
+        b: parseInt(hex.substr(4, 2), 16),
+        g: parseInt(hex.substr(2, 2), 16),
+        r: parseInt(hex.substr(0, 2), 16),
+        uint32: hexToUint32(hex),
+    };
+}
+
+function RGBToUint32(rgb) {
+    return rgb.r | rgb.g << 8 | rgb.b << 16 | 0xFF << 24;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {string[]} palette 
+ */
+function recolorToPalette(rendering, palette) {
+    const paletteConverted = palette.map((hex) => { 
+        const cone = HSVToCone(RGBToHSV(hexToRGB(hex)));
+        const uint32 = hexToUint32(hex);
+        return { ...cone, uint32 };
+    });
+    const mapping = new Map();
+
+    function chooseColor(uint32) {
+        const alpha = (uint32 >>> 24) < 16;
+        if (alpha) return 0;
+
+        const existing = mapping.get(uint32);
+        if (existing) return existing;
+
+        const actual = HSVToCone(RGBToHSV(uint32ToRGB(uint32)));
+        let bestSqrDistance = Infinity;
+        let best = paletteConverted[0];
+
+        for (let candidate of paletteConverted) {
+            const dx = Math.abs(actual.x - candidate.x);
+            const dy = Math.abs(actual.y - candidate.y);
+            const dz = Math.abs(actual.z - candidate.z);
+            const sqrDistance = dx*dx + dy*dy + dz*dz;
+            
+            if (sqrDistance < bestSqrDistance) {
+                bestSqrDistance = sqrDistance;
+                best = candidate;
+            }
+        }
+
+        mapping.set(uint32, best.uint32);
+        return best.uint32;
+    }
+
+    withPixels(rendering, (pixels) => {
+        for (let i = 0; i < pixels.length; ++i) {
+            pixels[i] = chooseColor(pixels[i]);
+        }
+    });
+}
+
+    </script>
+    <script id="text.js">/**
+ * @typedef {Object} BlitsyFontCharacter
+ * @property {number} codepoint
+ * @property {CanvasImageSource} image
+ * @property {number} spacing
+ */
+
+/**
+ * @typedef {Object} BlitsyFont
+ * @property {string} name
+ * @property {number} lineHeight
+ * @property {Map<number, BlitsyFontCharacter>} characters
+ */
+
+/**
+ * @typedef {Object} BlitsyGlyph
+ * @property {HTMLCanvasElement} image
+ * @property {Vector2} position
+ * @property {Vector2} offset
+ * @property {boolean} hidden
+ * @property {string} fillStyle
+ * @property {Map<string, any>} styles
+ */
+
+/**
+ * @typedef {Object} BlitsyTextRenderOptions
+ * @property {BlitsyFont} font
+ * @property {number} lineCount
+ * @property {number} lineWidth
+ */
+
+/** @typedef {BlitsyGlyph[]} BlitsyPage */
+
+/** @param {HTMLScriptElement} script */
+async function loadBasicFont(script) {
+    const atlasdata = script.innerHTML;
+    const charWidth = parseInt(script.getAttribute("data-char-width"), 10);
+    const charHeight = parseInt(script.getAttribute("data-char-height"), 10);
+    const indexes = parseRuns(script.getAttribute("data-runs"));
+
+    const atlas = await loadImage(atlasdata);
+    const cols = atlas.naturalWidth / charWidth;
+
+    const font = {
+        name: "font",
+        lineHeight: charHeight,
+        characters: new Map(),
+    };
+
+    indexes.forEach((codepoint, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+
+        const rect = { 
+            x: col * charWidth, 
+            y: row * charHeight, 
+            width: charWidth, 
+            height: charHeight,
+        };
+
+        const image = copyImageRect(atlas, rect).canvas;
+        font.characters.set(codepoint, { codepoint, image, spacing: charWidth });
+    });
+
+    return font;
+}
+
+/** @param {string} data */
+function parseRuns(data) {
+    const runs = data.split(",").map((run) => run.split("-").map((index) => parseInt(index, 10)));
+    const indexes = [];
+    runs.forEach(([min, max]) => indexes.push(...range(min, max)));
+    return indexes;
+}
+
+/**
+ * @param {CanvasImageSource} source 
+ * @param {Rect} rect 
+ */
+function copyImageRect(source, rect) {
+    const rendering = createRendering2D(rect.width, rect.height);
+    rendering.drawImage(source, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    return rendering;
+}
+
+/**
+ * @param {BlitsyFont} font 
+ * @param {string} char 
+ */
+function getFontChar(font, char) {
+    const codepoint = char.codePointAt(0);
+    return font.characters.get(codepoint);
+}
+
+/** 
+ * @param {BlitsyPage} page 
+ * @param {number} width
+ * @param {number} height
+ * @param {number} ox
+ * @param {number} oy
+ */
+function renderPage(page, width, height, ox = 0, oy = 0)
+{
+    const result = createRendering2D(width, height);
+    const buffer = createRendering2D(width, height);
+
+    for (const glyph of page)
+    {
+        if (glyph.hidden) continue;
+
+        // padding + position + offset
+        const x = ox + glyph.position.x + glyph.offset.x;
+        const y = oy + glyph.position.y + glyph.offset.y;
+        
+        // draw tint layer
+        result.fillStyle = glyph.fillStyle;
+        result.fillRect(x, y, glyph.image.width, glyph.image.height);
+        
+        // draw text layer
+        buffer.drawImage(glyph.image, x, y);
+    }
+
+    // draw text layer in tint color
+    result.globalCompositeOperation = 'destination-in';
+    result.drawImage(buffer.canvas, 0, 0);
+
+    return result;
+}
+
+const defaultStyleHandler = (styles, style) => {
+    if (style.substr(0, 1) === "+") {
+        styles.set(style.substring(1), true);
+    } else if (style.substr(0, 1) === "-") {
+        styles.delete(style.substring(1));
+    } else if (style.includes("=")) {
+        const [key, val] = style.split(/\s*=\s*/);
+        styles.set(key, val);
+    }
+}
+
+/**
+ * @param {string} script 
+ * @param {BlitsyTextRenderOptions} options 
+ * @param {*} styleHandler 
+ * @returns {BlitsyPage[]}
+ */
+function scriptToPages(script, options, styleHandler = defaultStyleHandler) {
+    const tokens = tokeniseScript(script);
+    const commands = tokensToCommands(tokens);
+    return commandsToPages(commands, options, styleHandler);
+}
+
+function tokeniseScript(script) {
+    const tokens = [];
+    let buffer = "";
+    let braceDepth = 0;
+
+    function openBrace() {
+        if (braceDepth === 0) flushBuffer();
+        braceDepth += 1;
+    }
+
+    function closeBrace() {
+        if (braceDepth === 1) flushBuffer();
+        braceDepth -= 1;
+    }
+
+    function newLine() {
+        flushBuffer();
+        tokens.push(["markup", "el"]);
+    }
+
+    function flushBuffer() {
+        if (buffer.length === 0) return;
+        const type = braceDepth > 0 ? "markup" : "text";
+        tokens.push([type, buffer]);
+        buffer = "";
+    }
+
+    const actions = {
+        "{": openBrace,
+        "}": closeBrace,
+        "\n": newLine,
+    }
+
+    for (const char of script) {
+        if (char in actions)
+            actions[char]();
+        else
+            buffer += char;
+    }
+
+    flushBuffer();
+
+    return tokens;
+}
+
+function textBufferToCommands(buffer) {
+    const chars = Array.from(buffer);
+    return chars.map((char) => ({ type: "glyph", char, breakable: char === " " }));
+}
+
+function markupBufferToCommands(buffer) {
+    if (buffer === "ep") return [{ type: "break", target: "page" }];
+    if (buffer === "el") return [{ type: "break", target: "line" }];
+    else                 return [{ type: "style", style: buffer }];
+}
+
+/** @param {any[]} tokens */
+function tokensToCommands(tokens) {
+    const handlers = {
+        "text": textBufferToCommands,
+        "markup": markupBufferToCommands,
+    };
+
+    const tokenToCommands = ([type, buffer]) => handlers[type](buffer); 
+    return tokens.flatMap(tokenToCommands);
+}
+
+/**
+ * @param {*} commands 
+ * @param {BlitsyTextRenderOptions} options 
+ * @param {*} styleHandler 
+ */
+function commandsToPages(commands, options, styleHandler) {
+    commandsBreakLongSpans(commands, options);
+
+    const styles = new Map();
+    const pages = [];
+    let page = [];
+    let currLine = 0;
+
+    function newPage() {
+        pages.push(page);
+        page = [];
+        currLine = 0;
+    }
+
+    function endPage() { 
+        do { endLine(); } while (currLine % options.lineCount !== 0)
+    }
+
+    function endLine() {
+        currLine += 1;
+        if (currLine === options.lineCount) newPage();
+    }
+
+    function doBreak(target) {
+             if (target === "line") endLine();
+        else if (target === "page") endPage(); 
+    }
+
+    function findNextBreakIndex() {
+        let width = 0;
+
+        for (let i = 0; i < commands.length; ++i) {
+            const command = commands[i];
+            if (command.type === "break") return i;
+            if (command.type === "style") continue;
+
+            width += computeLineWidth(options.font, command.char);
+            // if we overshot, look backward for last possible breakable glyph
+            if (width > options.lineWidth) {
+                const result = find(commands, i, -1, command => command.type === "glyph" && command.breakable);
+                if (result) return result[1];
+            }
+        };
+    }
+
+    function addGlyph(command, offset) {
+        const char = getFontChar(options.font, command.char);
+        const position = { x: offset, y: currLine * (options.font.lineHeight + 4) };
+        const glyph = { 
+            image: char.image,
+            position,
+            offset: { x: 0, y: 0 },
+            hidden: true,
+            fillStyle: "white",
+            styles: new Map(styles.entries()),
+        };
+
+        page.push(glyph);
+        return char.spacing;
+    }
+
+    function generateGlyphLine(commands) {
+        let offset = 0;
+        for (const command of commands) {
+            if (command.type === "glyph") {
+                offset += addGlyph(command, offset);
+            } else if (command.type === "style") {
+                styleHandler(styles, command.style);
+            }
+        }
+    }
+
+    let index;
+    
+    while ((index = findNextBreakIndex()) !== undefined) {
+        generateGlyphLine(commands.slice(0, index));
+        commands = commands.slice(index);
+
+        const command = commands[0];
+        if (command.type === "break") {
+            doBreak(command.target);
+            commands.shift();
+        } else {
+            if (command.type === "glyph" && command.char === " ") {
+                commands.shift();
+            }
+            endLine();
+        }
+    }
+
+    generateGlyphLine(commands);
+    endPage();
+
+    return pages;
+}
+
+/**
+ * Find spans of unbreakable commands that are too long to fit within a page 
+ * width and amend those spans so that breaking permitted in all positions. 
+ * @param {*} commands
+ * @param {BlitsyTextRenderOptions} options
+ */
+function commandsBreakLongSpans(commands, options) {
+    const canBreak = (command) => command.type === "break" 
+                               || (command.type === "glyph" && command.breakable); 
+
+    const spans = filterToSpans(commands, canBreak);
+
+    for (const span of spans) {
+        const glyphs = span.filter(command => command.type === "glyph");
+        const charWidths = glyphs.map(command => computeLineWidth(options.font, command.char));
+        const spanWidth = charWidths.reduce((x, y) => x + y, 0);
+
+        if (spanWidth > options.lineWidth) {
+            for (const command of glyphs) command.breakable = true;
+        }
+    }
+}
+
+/**
+ * @param {BlitsyFont} font 
+ * @param {string} line 
+ */
+function computeLineWidth(font, line) {
+    const chars = Array.from(line).map((char) => getFontChar(font, char));
+    const widths = chars.map((char) => char ? char.spacing : 0);
+    return widths.reduce((a, b) => a + b);
+}
+
+/**
+ * Segment the given array into contiguous runs of elements that are not 
+ * considered breakable.
+ */
+function filterToSpans(array, breakable) {
+    const spans = [];
+    let buffer = [];
+
+    array.forEach((element, index) => {
+        if (!breakable(element, index)) {
+            buffer.push(element);
+        } else if (buffer.length > 0) {
+            spans.push(buffer);
+            buffer = [];
+        }
+    });
+
+    if (buffer.length > 0) {
+        spans.push(buffer);
+    }
+
+    return spans;
+}
+
+function find(array, start, step, predicate) {
+    for (let i = start; 0 <= i && i < array.length; i += step) {
+        if (predicate(array[i], i)) return [array[i], i];
+    }
+}
+
+    </script>
+    
+    
+    
+    
+    
+    
+    
+    <script id="flicksy.js">/**
+ * @typedef {Object} Vector3
+ * @property {number} x
+ * @property {number} y
+ * @property {number} z
+ */
+
+/**
+ * @typedef {Object} FlicksyDataDrawing
+ * @property {string} id
+ * @property {string} name
+ * @property {Vector3} position
+ * @property {Vector2} pivot
+ * @property {string} data
+ */
+
+/**
+ * @typedef {Object} FlicksyDataObjectBehaviour
+ * @property {string} dialogue
+ * @property {string} destination
+ * @property {string} script
+ */
+
+/**
+ * @typedef {Object} FlicksyDataObject
+ * @property {string} id
+ * @property {string} name
+ * @property {Vector3} position
+ * @property {string} drawing
+ * @property {boolean} hidden
+ * @property {FlicksyDataObjectBehaviour} behaviour
+ */
+
+/**
+ * @typedef {Object} FlicksyDataScene
+ * @property {string} id
+ * @property {string} name
+ * @property {Vector3} position
+ * @property {FlicksyDataObject[]} objects
+ */
+
+/**
+ * @typedef {Object} FlicksyDataProjectDetails
+ * @property {string} id
+ * @property {string} name
+ * @property {string[]} palette
+ * @property {boolean} doubleResolution
+ * @property {boolean} doubleDialogue
+ */
+
+/**
+ * @typedef {Object} FlicksyPlayState
+ * @property {string} scene
+ * @property {string} cursor
+ * @property {Object} variables
+ * @property {boolean} locked
+ */
+
+/**
+ * @typedef {Object} FlicksyDataProject
+ * @property {FlicksyDataProjectDetails} details
+ * @property {FlicksyDataDrawing[]} drawings
+ * @property {FlicksyDataScene[]} scenes
+ * @property {FlicksyPlayState} state
+ */
+
+/** @type {FlicksyDataProject} */
+const EMPTY_PROJECT_DATA = {
+    details: {
+        id: "EMPTY.PROJECT",
+        name: "empty project",
+        doubleResolution: false,
+        doubleDialogue: false,
+        palette: [
+            "#00000000",
+            "#FFFF00",
+            "#FF6600",
+            "#DD0000",
+            "#FF0099",
+            "#330099",
+            "#0000CC",
+            "#0099FF",
+            "#00AA00",
+            "#006600",
+            "#663300",
+            "#996633",
+            "#BBBBBB",
+            "#888888",
+            "#444444",
+            "#000000"
+        ]
+    },
+    drawings: [
+        {
+            id: "1",
+            name: "default cursor",
+            position: { x: 0, y: 0, z: 0 },
+            pivot: { x: 6, y: 2 },
+            data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABEAAAAXCAYAAADtNKTnAAAAmklEQVQ4T+2UURKAIAhE83CcmsPV4Aihkq5O/dVXo/BmF1fTEXzMfMoyEaVov13rigRARLmOmSHQD+lHPZ2JtoxOagrxJ/UEXIK0QFW3DRGg5ihpOjWhQdh88ML/DAlkDtNeFBiwgrioI1fmhpRGUwN3l0JRZYP1tlZA70N2bVVKdiCWk9b/ymy+haC2/NMZPsSIJQiCZEVv8QUbvb1oFvm1hQAAAABJRU5ErkJggg=="
+        }
+    ],
+    scenes: [
+        {
+            id: "0",
+            name: "unnamed scene",
+            position: { x: 0, y: 0, z: 0 },
+            objects: []
+        }
+    ],
+    state: {
+        scene: "0",
+        cursor: "1",
+        variables: {},
+        locked: false,
+    }
+}
+
+/** 
+ * Add defaults for fields that are missing because the project is older.
+ * @param {FlicksyDataProject} project 
+ */
+function repairProjectData(project) {
+    function repairDrawingData(drawing) {
+        drawing.pivot = drawing.pivot ?? { x: 0, y: 0 };
+    }
+
+    /** @param {FlicksyDataObject} object */
+    function repairObjectData(object) {
+        const drawing = getDrawingById(project, object.drawing);
+        if (drawing === undefined) object.drawing = project.drawings[0].id;
+    }
+
+    project.state = project.state ?? {
+        scene: project.details["start"],
+        cursor: project.details["cursor"] || "",
+        variables: {},
+        locked: false,
+    };
+    project.state.locked = false;
+
+    project.drawings.forEach(repairDrawingData);
+    project.scenes.flatMap((scene) => scene.objects).forEach(repairObjectData);
+    return project;
+}
+
+/**
+ * @param {FlicksyDataProject} project 
+ * @param {string} sceneId 
+ */
+function getSceneById(project, sceneId) {
+    return project.scenes.find((scene) => scene.id === sceneId);
+}
+
+/**
+ * @param {FlicksyDataProject} project 
+ * @param {string} drawingId 
+ */
+function getDrawingById(project, drawingId) {
+    return project.drawings.find((drawing) => drawing.id === drawingId);
+}
+
+/**
+ * @param {FlicksyDataProject} project 
+ * @param {string} objectId 
+ */
+function getObjectById(project, objectId) {
+    const objects = project.scenes.flatMap((scene) => scene.objects);
+    return objects.find((object) => object.id === objectId);
+}
+
+/** @param {FlicksyDataObject} object */
+function isObjectInteractable(object) {
+    return 0 < (object.behaviour.script.length + object.behaviour.dialogue.length + object.behaviour.destination.length);
+}
+
+class FlicksyProjectManager {
+    constructor() {
+        /** @type {FlicksyDataProject} */
+        this.projectData = undefined;
+
+        /** @type {Map<string, CanvasRenderingContext2D>} */
+        this.drawingIdToRendering = new Map();
+
+        this.ready = false;
+    }
+
+    /** @param {FlicksyDataProject} projectData */
+    async loadProjectData(projectData) {
+        this.ready = false;
+        // reload drawings from scratch
+        this.drawingIdToRendering.clear();
+        const loads = projectData.drawings.map((drawing) => this.reloadDrawingData(drawing));
+        await Promise.all(loads);
+
+        this.projectData = projectData;
+        this.ready = true;
+    }
+
+    /** @param {FlicksyProjectManager} manager */
+    async copyFromManager(manager) {
+        this.ready = false;
+
+        manager.drawingIdToRendering.forEach((rendering, drawingId) => {
+            this.drawingIdToRendering.set(drawingId, copyRendering2D(rendering));
+        });
+
+        this.projectData = JSON.parse(JSON.stringify(manager.projectData));
+
+        this.ready = true;
+    }
+
+    clear() {
+        this.ready = false;
+        this.projectData = undefined;
+        this.drawingIdToRendering.clear();
+    }
+
+    async saveProjectData() {
+        const saves = this.projectData.drawings.map((drawing) => this.saveDrawingData(drawing));
+        await Promise.all(saves);
+    }
+    
+    /** @param {FlicksyDataDrawing} drawing */
+    async reloadDrawingData(drawing) {
+        const image = await loadImage(drawing.data);
+        const rendering = imageToRendering2D(image);
+        this.drawingIdToRendering.set(drawing.id, rendering);
+    }
+
+    /** @param {FlicksyDataDrawing} drawing */
+    async saveDrawingData(drawing) {
+        const rendering = this.drawingIdToRendering.get(drawing.id);
+        drawing.data = rendering.canvas.toDataURL();
+    }
+
+    /** 
+     * @param {FlicksyDataDrawing} drawing
+     * @param {CanvasRenderingContext2D} rendering
+     */
+    async insertDrawing(drawing, rendering=undefined) {
+        this.projectData.drawings.push(drawing);
+        if (rendering) {
+            this.drawingIdToRendering.set(drawing.id, rendering);
+        } else {
+            await this.reloadDrawingData(drawing);
+        }
+    }
+
+    /** @param {FlicksyDataDrawing} drawing */
+    removeDrawing(drawing) {
+        removeItemFromArray(drawing, this.projectData.drawings);
+        this.drawingIdToRendering.delete(drawing.id);
+        if (this.projectData.state.cursor === drawing.id) {
+            this.projectData.state.cursor = undefined;
+        }
+    }
+
+    /** 
+     * @param {FlicksyDataDrawing} drawing 
+     * @returns {Rect}
+     */
+    getDrawingRect(drawing) {
+        const rendering = this.drawingIdToRendering.get(drawing.id);
+        const { x, y } = drawing.position;
+        const { width, height } = rendering.canvas;
+        return { x, y, width, height };
+    }
+}
+
+    </script>
+    <script id="utility.js">'use strict'
+
+/**
+ * @typedef {Object} Vector2
+ * @property {number} x
+ * @property {number} y
+ */
+
+/**
+ * @typedef {Object} Rect
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ */
+
+/**
+ * @param {string} query 
+ * @param {ParentNode} element 
+ * @returns {HTMLElement}
+ */
+const ONE = (query, element = undefined) => (element || document).querySelector(query);
+/**
+ * @param {string} query 
+ * @param {HTMLElement | Document} element 
+ * @returns {HTMLElement[]}
+ */
+const ALL = (query, element = undefined) => Array.from((element || document).querySelectorAll(query));
+
+// async equivalent of Function constructor
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor
+
+/**
+ * @param {Element} element 
+ */
+function removeAllChildren(element) {
+    while (element.children.length) 
+        element.removeChild(element.children[0]);   
+}
+
+/**
+ * @param {MouseEvent | Touch} event 
+ * @param {HTMLElement} element 
+ */
+function eventToElementPixel(event, element) {
+    const rect = element.getBoundingClientRect();
+    return [event.clientX - rect.x, event.clientY - rect.y];
+}
+
+/** @param {Event} event */
+function killEvent(event) {
+    event.stopPropagation();
+    event.preventDefault();
+}
+
+/**
+ * @param {string} src
+ * @returns {Promise<HTMLImageElement>} image
+ */
+async function loadImage(src) {
+    return new Promise((resolve, reject) => {
+        const image = document.createElement("img");
+        image.addEventListener("load", () => resolve(image));
+        image.src = src;
+    });
+}
+
+/** @param {HTMLImageElement} image */
+function imageToRendering2D(image) {
+    const rendering = createRendering2D(image.naturalWidth, image.naturalHeight);
+    rendering.drawImage(image, 0, 0);
+    return rendering;
+}
+
+/**
+ * @template {keyof HTMLElementTagNameMap} K
+ * @param {K} tagName 
+ * @param {*} attributes 
+ * @param  {...(Node | string)} children 
+ * @returns {HTMLElementTagNameMap[K]}
+ */
+function html(tagName, attributes = {}, ...children) {
+    const element = /** @type {HTMLElementTagNameMap[K]} */ (document.createElement(tagName)); 
+    Object.entries(attributes).forEach(([name, value]) => element.setAttribute(name, value));
+    children.forEach((child) => element.append(child));
+    return element;
+}
+
+/**
+ * @template {keyof SVGElementTagNameMap} K
+ * @param {K} tagName 
+ * @param {*} attributes 
+ * @param  {...SVGElement} children 
+ * @returns {SVGElementTagNameMap[K]}
+ */
+ function svg(tagName, attributes = {}, ...children) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+    Object.entries(attributes).forEach(([name, value]) => element.setAttributeNS(null, name, value));
+    children.forEach((child) => element.append(child));
+    return element;
+}
+
+// from https://github.com/ai/nanoid/blob/master/non-secure/index.js
+const urlAlphabet = 'ModuleSymbhasOwnPr-0123456789ABCDEFGHNRVfgctiUvz_KqYTJkLxpZXIjQW';
+function nanoid(size = 21) {
+    let id = '';
+    let i = size;
+    while (i--) id += urlAlphabet[(Math.random() * 64) | 0];
+    return id
+}
+
+/**
+ * @param {File} file 
+ * @return {Promise<string>}
+ */
+async function textFromFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve(/** @type {string} */ (reader.result));
+        reader.readAsText(file); 
+    });
+}
+
+/**
+ * @param {File} file 
+ * @return {Promise<string>}
+ */
+async function dataURLFromFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve(/** @type {string} */ (reader.result));
+        reader.readAsDataURL(file); 
+    });
+}
+
+/**
+ * @param {string} source
+ */
+async function htmlFromText(source) {
+    const template = document.createElement('template');
+    template.innerHTML = source;
+    return template.content;
+}
+
+/**
+ * @param {string} text 
+ */
+function textToBlob(text, type = "text/plain") {
+    return new Blob([text], { type });
+}
+
+/**
+ * @param {string} accept 
+ * @param {boolean} multiple 
+ * @returns {Promise<File[]>}
+ */
+async function pickFiles(accept = "*", multiple = false) {
+    return new Promise((resolve) => {
+        const fileInput = html("input", { type: "file", accept, multiple });
+        fileInput.addEventListener("change", () => resolve(Array.from(fileInput.files)));
+        fileInput.click();
+    });
+}
+
+function translationMatrix(translation) {
+    const matrix = new DOMMatrix();
+    matrix.e = translation.x;
+    matrix.f = translation.y;
+    return matrix;
+}
+
+/** @param {DOMMatrix} matrix */
+function getMatrixTranslation(matrix) {
+    return { x: matrix.e, y: matrix.f };
+}
+
+/** @param {DOMMatrix} matrix */
+function getMatrixScale(matrix) {
+    return { 
+        x: Math.sqrt(matrix.a*matrix.a + matrix.c*matrix.c),
+        y: Math.sqrt(matrix.b*matrix.b + matrix.d*matrix.d),
+    };
+}
+
+/**
+ * @param {number} value 
+ * @param {number} min 
+ * @param {number} max 
+ */
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * @param {Rect} rect 
+ * @param {number} padding 
+ */
+function padRect(rect, padding) {
+    rect.x -= padding;
+    rect.y -= padding;
+    rect.width += padding * 2;
+    rect.height += padding * 2;
+    return rect;
+}
+
+/**
+ * @param {Rect} rect
+ * @param {{ x: number, y: number }} point 
+ */
+function rectContainsPoint(rect, point) {
+    return point.x >= rect.x
+        && point.y >= rect.y
+        && point.x <  rect.x + rect.width
+        && point.y <  rect.y + rect.height;
+}
+
+/**
+ * @param {Rect[]} rects
+ * @param {Rect} fallback
+ * @returns {Rect}
+ */
+function boundRects(rects, fallback = { x: 0, y: 0, width: 0, height: 0 }) {
+    const bounds = DOMRect.fromRect(rects[0] || fallback);
+    rects.forEach((rect) => {
+        const { x, y, width, height } = rect;
+        let [top, left, bottom, right] = [y, x, y + height, x + width];
+        left = Math.min(bounds.left, left);
+        top = Math.min(bounds.top, top);
+        right = Math.max(bounds.right, right);
+        bottom = Math.max(bounds.bottom, bottom);
+        bounds.x = left;
+        bounds.y = top;
+        bounds.width = right - left;
+        bounds.height = bottom - top;
+    });
+    return bounds;
+}
+
+/**
+ * @param {any} item 
+ * @param {any[]} array 
+ */
+function removeItemFromArray(item, array) {
+    const index = array.indexOf(item);
+    array.splice(index, 1);
+}
+
+/**
+ * 
+ * @param {string} original 
+ * @param {string} insert 
+ * @param {number} start 
+ * @param {number} end 
+ */
+function insertText(original, insert, start, end) {
+    const left = original.substring(0, start);
+    const right = original.substring(end);
+    return `${left}${insert}${right}`;
+}
+
+/**
+ * @param {number} min 
+ * @param {number} max 
+ */
+function range(min, max) {
+    return Array.from(new Array(max-min+1), (x, i) => i + min);
+}
+
+/**
+ * @param {number} min 
+ * @param {number} max 
+ */
+function randomInt(min, max) {
+    min = Math.ceil(min);
+    max = Math.floor(max);
+    return Math.floor(Math.random() * (max - min + 1) + min);
+}
+
+/** @param {number} milliseconds */
+function sleep(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+class EventEmitter {
+    constructor() {
+        this.listeners = {};
+    }
+
+    on(event, listener) {
+        if (this.listeners[event] === undefined)
+            this.listeners[event] = [];
+        this.listeners[event].push(listener);
+        return () => this.off(event, listener);
+    }
+
+    off(event, listener) {
+        const listeners = this.listeners[event] || [];
+        const index = listeners.indexOf(listener);
+        if (index !== -1)
+            this.listeners[event].splice(index, 1);
+    }
+
+    emit(event, ...args) {
+        const listeners = this.listeners[event] || [];
+        [...listeners].forEach((listener) => listener(...args));
+    }
+
+    once(event, listener) {
+        const remove = this.on(event, (...args) => {
+            remove();
+            listener(...args);
+        });
+        return remove;
+    }
+
+    async wait(event, timeout = undefined) {
+        return new Promise((resolve, reject) => {
+            if (timeout) setTimeout(reject, timeout);
+            this.once(event, resolve);
+        });
+    }
+};
+
+/**
+ * @template {keyof WindowEventMap} K
+ * @param {Window | Document | HTMLElement} element 
+ * @param {K} type 
+ * @param {(event: WindowEventMap[K]) => any} listener
+ */
+function listen(element, type, listener) {
+    element.addEventListener(type, listener);
+    return () => element.removeEventListener(type, listener);
+}
+
+    </script>
+    <script id="player.js">const CONT_ICON_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAGCAYAAAD68A/GAAAAAXNSR0IArs4c6QAAADNJREFUCJmNzrENACAMA0E/++/8NAhRBEg6yyc5SePUoNqwDICnWP04ww1tWOHfUqqf1UwGcw4T9WFhtgAAAABJRU5ErkJggg==";
+const STOP_ICON_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAGCAYAAAD68A/GAAAAAXNSR0IArs4c6QAAACJJREFUCJljZICC/////2fAAhgZGRn////PwIRNEhsYCgoBIkQHCf7H+yAAAAAASUVORK5CYII="
+
+class FlicksyPlayer {
+    /** @param {BlitsyFont} font */
+    constructor(font) {
+        this.events = new EventEmitter();
+        this.font = font;
+
+        // view is 4x scene resolution, for double-res text rendering
+        this.viewRendering = createRendering2D(160*4, 100*4);
+        this.sceneRendering = createRendering2D(160, 100);
+        this.viewRendering.canvas.classList.toggle("player-canvas", true);
+
+        this.projectManager = new FlicksyProjectManager();
+        this.dialoguePlayer = new DialoguePlayer(font);
+        
+        // an awaitable that generates a new promise that resolves once no dialogue is active
+        /** @type {PromiseLike<void>} */
+        this.dialogueWaiter = {
+            then: (resolve, reject) => {
+                if (!this.dialoguePlayer.active) resolve();
+                else return this.dialoguePlayer.events.wait("done").then(resolve, reject);
+            },
+        };
+    }
+
+    get state() {
+        return this.projectManager.projectData.state;
+    }
+
+    async load() {
+        await this.dialoguePlayer.load();
+    }
+
+    /** @param {FlicksyDataProject} projectData */
+    async loadFromProjectData(projectData) {
+        this.initialProjectData = JSON.parse(JSON.stringify(projectData));
+        await this.projectManager.loadProjectData(projectData);
+    }
+
+    /** @param {FlicksyProjectManager} projectManager */
+    async loadFromProjectManager(projectManager) {
+        this.initialProjectData = JSON.parse(JSON.stringify(projectManager.projectData));
+        await this.projectManager.copyFromManager(projectManager);
+    }
+
+    async reset() {
+        await this.loadFromProjectData(this.initialProjectData);
+        this.dialoguePlayer.restart();
+        this.changeScene(this.projectManager.projectData.state.scene);
+        this.render();
+    }
+
+    async resetObject(objectId) {
+        const live = getObjectById(this.projectManager.projectData, objectId);
+        const original = getObjectById(this.initialProjectData, objectId);
+        const copy = JSON.parse(JSON.stringify(original));
+
+        for (const key in live) delete live[key];
+        for (const key in copy) live[key] = copy[key];
+    }
+
+    async resetScene(sceneId) {
+        const live = getSceneById(this.projectManager.projectData, sceneId);
+        const original = getSceneById(this.initialProjectData, sceneId);
+        const copy = JSON.parse(JSON.stringify(original));
+
+        for (const key in live) delete live[key];
+        for (const key in copy) live[key] = copy[key];
+    }
+
+    log(text) {
+        this.events.emit("log", text);
+    }
+
+    update(dt) {
+        if (!this.projectManager.ready) return;
+
+        this.dialoguePlayer.update(dt);
+        this.render();
+    }
+
+    render() {
+        const double = this.projectManager.projectData.details.doubleResolution;
+        const doubleDialogue = this.projectManager.projectData.details.doubleDialogue;
+
+        if (double) {
+            this.sceneRendering.canvas.width = 320;
+            this.sceneRendering.canvas.height = 200;
+        } else {
+            this.sceneRendering.canvas.width = 160;
+            this.sceneRendering.canvas.height = 100;
+        }
+
+        // clear to black, then render objects in depth order
+        const currentSceneId = this.projectManager.projectData.state.scene;
+
+        if (currentSceneId) {
+            fillRendering2D(this.sceneRendering, 'black');
+            const scene = getSceneById(this.projectManager.projectData, currentSceneId);
+            const render = renderScene(this.projectManager, scene, 1);
+            this.sceneRendering.drawImage(render.canvas, 0, 0);
+        } else {
+            fillRendering2D(this.sceneRendering);
+        }
+
+        const cursorId = this.projectManager.projectData.state.cursor;
+        if (this.mouse && cursorId) {
+            const drawing = getDrawingById(this.projectManager.projectData, cursorId);
+            const rendering = this.projectManager.drawingIdToRendering.get(cursorId);
+            const { x, y } = this.mouse;
+            const { x: px, y: py } = drawing.pivot;
+
+            const factor = double ? .5 : .25;
+            const [dx, dy] = [Math.floor(x * factor - px), Math.floor(y * factor - py)];
+
+            this.sceneRendering.drawImage(rendering.canvas, dx, dy);
+        }
+
+        const { width: viewWidth, height: viewHeight } = this.viewRendering.canvas;
+
+        // copy scene at view scale (typically 2x or 4x)
+        this.viewRendering.drawImage(this.sceneRendering.canvas, 0, 0, viewWidth, viewHeight);
+
+        // render dialogue box if necessary
+        if (this.dialoguePlayer.active) {
+            const h = 320 / 2 * 2;
+            const v = 200 / 2 * 2;
+
+            let { width, height } = this.dialoguePlayer.dialogueRendering.canvas;
+            
+            if (!doubleDialogue) {
+                width *= 2;
+                height *= 2;
+            }
+
+            const x = (h*2-width)/2;
+            const y = (v+(v-height)/2);
+
+            this.dialoguePlayer.render();
+            this.viewRendering.drawImage(this.dialoguePlayer.dialogueRendering.canvas, x, y, width, height);
+        }
+    }
+
+    /**
+     * @param {number} x 
+     * @param {number} y 
+     */
+    isInteractableHovered(x, y) {
+        this.mouse = { x, y, };
+        const object = this.pointcast(x, y);
+        return object !== undefined && isObjectInteractable(object);
+    }
+
+    /**
+     * @param {number} x 
+     * @param {number} y 
+     */
+    click(x, y) {
+        if (this.dialoguePlayer.active) {
+            this.dialoguePlayer.skip();
+        } else if (!this.state.locked) {
+            const object = this.pointcast(x, y);
+            if (object) this.runObjectBehaviour(object);
+        }
+    }
+
+    hover(x, y) {
+        this.mouse = { x, y };
+    }
+
+    /**
+     * @param {number} x 
+     * @param {number} y 
+     */
+    pointcast(x, y) {
+        const double = this.projectManager.projectData.details.doubleResolution;
+        const factor = double ? .5 : .25;
+
+        x *= factor; y *= factor;
+        const scene = getSceneById(this.projectManager.projectData, this.projectManager.projectData.state.scene);
+        return pointcastScene(this.projectManager, scene, { x, y }, true);
+    }
+
+    /** @param {string} sceneId */
+    changeScene(sceneId) {
+        this.projectManager.projectData.state.scene = sceneId;
+        this.events.emit("next-scene", sceneId);
+    }
+
+    /** @param {FlicksyDataObject} object */
+    async runObjectBehaviour(object) { 
+        if (object.behaviour.script) {
+            const scene = getSceneById(this.projectManager.projectData, this.projectManager.projectData.state.scene);
+            const defines = generateScriptingDefines(this, scene, object);
+            const names = Object.keys(defines).join(", ");
+            const preamble = `const { ${names} } = COMMANDS;\n`;
+
+            try {
+                const script = new AsyncFunction("COMMANDS", preamble + object.behaviour.script);
+                await script(defines);
+            } catch (e) {
+                this.log(`SCRIPT ERROR in OBJECT '${object.name}' of SCENE '${scene.name}'\n${e}`);
+            }
+        }
+
+        if (object.behaviour.dialogue) {
+            this.dialoguePlayer.queueScript(object.behaviour.dialogue);
+        }
+
+        await this.dialogueWaiter;
+
+        if (object.behaviour.destination) {
+            this.changeScene(object.behaviour.destination);
+        }
+    }
+}
+
+class DialoguePlayer {
+    get active() {
+        return this.currentPage !== undefined;
+    }
+
+    get currentGlyph() {
+        return this.currentPage ? this.currentPage[this.showGlyphCount] : undefined;
+    } 
+
+    constructor(font) {
+        this.events = new EventEmitter();
+        this.font = font;
+        this.dialogueRendering = createRendering2D(8, 8);
+        this.restart();
+    }
+
+    async load() {
+        this.contIcon = await loadImage(CONT_ICON_DATA);
+        this.stopIcon = await loadImage(STOP_ICON_DATA);
+    }
+
+    restart() {
+        this.showCharTime = .05;
+        /** @type {BlitsyPage[]} */
+        this.queuedPages = [];
+
+        this.setPage(undefined);
+    }
+
+    /** @param {BlitsyPage} page */
+    setPage(page) {
+        this.currentPage = page;
+        this.pageTime = 0;
+        this.showGlyphCount = 0;
+        this.showGlyphElapsed = 0;
+        this.pageGlyphCount = page ? page.length : 0;
+
+        if (page !== undefined) {
+            this.events.emit("next-page", page);
+        } else {
+            this.events.emit("done");
+        }
+    }
+
+    /** @param {number} dt */
+    update(dt) {
+        if (!this.active) return;
+
+        this.pageTime += dt;
+        this.showGlyphElapsed += dt;
+
+        this.applyStyle();
+
+        while (this.showGlyphElapsed > this.showCharTime && this.showGlyphCount < this.pageGlyphCount) {
+            this.showGlyphElapsed -= this.showCharTime;
+            this.revealNextChar();
+            this.applyStyle();
+        }
+    }
+
+    render() {
+        const padding = 8;
+        const lines = 3;
+        const height = ((lines + 1) * 4) + this.font.lineHeight * lines + 15;
+        const width = 256;
+
+        resizeRendering2D(this.dialogueRendering, width, height);
+        fillRendering2D(this.dialogueRendering, "#222222");
+        const render = renderPage(this.currentPage, width, height, padding, padding);
+        this.dialogueRendering.drawImage(render.canvas, 0, 0);
+
+        if (this.showGlyphCount === this.pageGlyphCount) {
+            const prompt = this.queuedPages.length > 0 
+                         ? this.contIcon 
+                         : this.stopIcon;
+            this.dialogueRendering.drawImage(prompt, width-padding-prompt.width, height-4-prompt.height);
+        }
+    }
+
+    revealNextChar() {
+        this.showGlyphCount = Math.min(this.showGlyphCount + 1, this.pageGlyphCount);
+        
+        if (!this.currentPage) return;
+
+        this.currentPage.forEach((glyph, i) => {
+            if (i < this.showGlyphCount) glyph.hidden = false;
+        });
+    }
+
+    revealAll() {
+        if (!this.currentPage) return;
+
+        this.showGlyphCount = this.currentPage.length;
+        this.revealNextChar();
+    }
+
+    cancel() {
+        this.queuedPages.length = 0;
+        this.currentPage = undefined;
+    }
+
+    skip() {
+        if (this.showGlyphCount === this.pageGlyphCount) {
+            this.moveToNextPage();
+        } else {
+            this.showGlyphCount = this.pageGlyphCount;
+
+            if (this.currentPage)
+                this.currentPage.forEach((glyph) => glyph.hidden = false);
+        }
+    }
+
+    moveToNextPage() {
+        const nextPage = this.queuedPages.shift();
+        this.setPage(nextPage);
+    }
+
+    queueScript(script) {
+        const pages = scriptToPages(script, { font: this.font, lineWidth: 240, lineCount: 3 });
+        this.queuedPages.push(...pages);
+        
+        if (!this.currentPage)
+            this.moveToNextPage();
+    
+        const last = pages[pages.length - 1];
+        const queued = this.queuedPages;
+        return new Promise((resolve) => {
+            const remove1 = this.events.on("next-page", onShown);
+            const remove2 = this.events.on("done", onShown);
+
+            function onShown(page) {
+                if (page !== last && !queued.includes(last)) {
+                    remove1();
+                    remove2();
+                    resolve();
+                }
+            }
+        });
+    }
+
+    applyStyle() {
+        if (!this.currentPage) return;
+
+        if (this.currentGlyph) {
+            if (this.currentGlyph.styles.has("delay")) {
+                this.showCharTime = parseFloat(this.currentGlyph.styles.get("delay"));
+            } else {
+                this.showCharTime = .05;
+            }
+        }
+
+        this.currentPage.forEach((glyph, i) => {
+            if (glyph.styles.has("r"))
+                glyph.hidden = false;
+            if (glyph.styles.has("clr"))
+                glyph.fillStyle = glyph.styles.get("clr");
+            if (glyph.styles.has("shk")) 
+                glyph.offset = { x: randomInt(-1, 1), y: randomInt(-1, 1) };
+            if (glyph.styles.has("wvy"))
+                glyph.offset.y = (Math.sin(i + this.pageTime * 5) * 3) | 0;
+        });
+    }
+}
+
+/** 
+ * @param {FlicksyProjectManager} projectManager
+ * @param {FlicksyDataScene} scene
+ * @param {number} scale
+ */
+function renderScene(projectManager, scene, scale = 2) {
+    const double = projectManager.projectData.details.doubleResolution;
+    const rescale = double ? 2 : 1;
+    const width = 160 * rescale;
+    const height = 100 * rescale;
+
+    const sceneRendering = createRendering2D(width * scale, height * scale);
+    fillRendering2D(sceneRendering, 'black');
+    const objects = scene.objects.slice().sort((a, b) => a.position.z - b.position.z);
+    objects.forEach((object) => {
+        if (object.hidden) return;
+
+        const canvas = projectManager.drawingIdToRendering.get(object.drawing).canvas;
+
+        sceneRendering.drawImage(
+            canvas,
+            object.position.x * scale, 
+            object.position.y * scale, 
+            canvas.width * scale, 
+            canvas.height * scale,
+        );
+    });
+
+    return sceneRendering;
+}
+
+/**
+ * @param {FlicksyProjectManager} projectManager
+ * @param {FlicksyDataScene} scene
+ * @param {Vector2} point
+ * @returns {FlicksyDataObject}
+ */
+function pointcastScene(projectManager, scene, point, onlyVisible = false) {
+    const { x: sx, y: sy } = point;
+
+    const objects = scene.objects.slice().sort((a, b) => a.position.z - b.position.z).reverse();
+    for (let object of objects) {
+        if (object.hidden && onlyVisible) continue;
+
+        const drawing = getDrawingById(projectManager.projectData, object.drawing);
+        const rendering = projectManager.drawingIdToRendering.get(drawing.id);
+
+        const { x, y } = object.position;
+        const { width, height } = rendering.canvas;
+        const rect = { x, y, width, height };
+
+        if (rectContainsPoint(rect, point)) {
+            const [ cx, cy ] = [ sx - object.position.x, sy - object.position.y ];
+            const alpha = rendering.getImageData(cx, cy, 1, 1).data[3];
+            if (alpha !== 0) return object;
+        }
+    }
+}
+
+/**
+ * @param {FlicksyPlayer} player 
+ * @param {FlicksyDataScene} scene 
+ * @param {FlicksyDataObject} object 
+ */
+function generateScriptingDefines(player, scene, object) {
+    const objectFromId = (id) => {
+        const object = getObjectById(player.projectManager.projectData, id);
+        if (object === undefined) throw new Error(`NO OBJECT ${id}`);
+        return object;
+    }
+
+    const state = player.projectManager.projectData.state;
+
+    // edit here to add new scripting functions
+    const defines = {};
+    
+    defines.OBJECT = object.id;
+    defines.SCENE = scene.id;
+    defines.VARS = state.variables;
+
+    defines.LOG = (text) => player.log(text);
+    defines.SET = (key, value) => state.variables[key] = value;
+    defines.GET = (key, fallback=0) => state.variables[key] || fallback;
+
+    defines.TRANSFORM = (object, drawing) => objectFromId(object).drawing = drawing;
+    defines.TRAVEL = (scene) => player.changeScene(scene);
+    
+    defines.HIDE = (object) => objectFromId(object).hidden = true;
+    defines.SHOW = (object) => objectFromId(object).hidden = false;
+
+    defines.LOCK = () => state.locked = true;
+    defines.UNLOCK = () => state.locked = false;
+
+    defines.SAY = async (dialogue) => player.dialoguePlayer.queueScript(dialogue);
+    defines.DELAY = async (seconds) => sleep(seconds * 1000);
+    defines.DIALOGUE = player.dialogueWaiter;
+    defines.DIALOG = defines.DIALOGUE;
+
+    defines.RESET_GAME = async () => player.reset();
+    defines.RESET_OBJECT = async (object) => player.resetObject(object);
+    defines.RESET_SCENE = async (scene) => player.resetScene(scene);
+
+    return defines;
+}
+
+    </script>
+    
+    <script id="main.js">async function start() {
+    const dataElement = ONE("#project-data");
+    const play = ONE("body").getAttribute("data-play") === "true";
+
+    const save = localStorage.getItem("flicksy2/test-save");
+    const json = (play || !save) ? dataElement.innerHTML : save;
+    const data = JSON.parse(json);
+
+    playerSetup = await setup();
+
+    if (play) {
+        const player = playerSetup.player;
+        player.events.on("log", console.log);
+        await player.loadFromProjectData(data);
+        playerSetup.scene.hidden = false;
+    } else {
+        await editor.start();
+        await editor.setProjectData(data);
+
+        let prev;
+        const timer = (next) => {
+            prev ||= Date.now();
+            editor.sceneTabEditor.previewPlayer.update((next - prev) / 1000.);
+            prev = next;
+            window.requestAnimationFrame(timer);
+        }
+        timer();
+    }
+}
+
+/** @type {{ player: FlicksyPlayer, scene: PanningScene }} */
+let playerSetup;
+
+async function setup() {
+    const font = await loadBasicFont(/** @type {HTMLScriptElement} */ (ONE("#font-data")));
+    const scene = new PanningScene(ONE("#play-scene"));
+    const player = new FlicksyPlayer(font);
+
+    scene.locked = true;
+    scene.container.appendChild(player.viewRendering.canvas);
+
+    let prev;
+    const timer = (next) => {
+        prev ||= Date.now();
+        player.update((next - prev) / 1000.);
+        prev = next;
+        window.requestAnimationFrame(timer);
+    }
+    timer();
+
+    function reframe() {
+        const width = player.viewRendering.canvas.width;
+        const height = player.viewRendering.canvas.height;
+        scene.frameRect(padRect(new DOMRect(0, 0, width, height), 8));
+    }
+    window.addEventListener("resize", reframe);
+    reframe();
+
+    const mouseEventToPixel = (event) => {
+        const mouse = scene.mouseEventToSceneTransform(event);
+        return [mouse.e, mouse.f];
+    }
+
+    const viewport = ONE("#content");
+
+    player.viewRendering.canvas.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+    });
+    player.viewRendering.canvas.addEventListener("click", (event) => {
+        killEvent(event);
+        const [x, y] = mouseEventToPixel(event);
+        player.click(x, y);
+    });
+    viewport.addEventListener("pointermove", (event) => {
+        if (scene.hidden) return;
+        //killEvent(event);
+        const [x, y] = mouseEventToPixel(event);
+        const clickable = player.isInteractableHovered(x, y);
+        
+        if (player.projectManager.projectData.state.cursor) {
+            player.viewRendering.canvas.style.setProperty("cursor", "none");
+        } else {
+            player.viewRendering.canvas.style.setProperty("cursor", clickable ? "pointer" : "default");
+        }
+    });
+
+    await player.load();
+
+    return { scene, player };
+}
+
+class PanningScene {
+    get hidden() { return this.container.hidden; }
+    set hidden(value) { this.container.hidden = value; }
+
+    /**
+     * @param {HTMLElement} container 
+     */
+    constructor(container) {
+        this.viewport = container.parentElement;
+        this.container = container;
+        this.transform = new DOMMatrix();
+        this.locked = false;
+
+        this.viewport.addEventListener("pointerdown", (event) => {
+            if (this.hidden || this.locked) return;
+            killEvent(event);
+    
+            // determine and save the relationship between mouse and scene
+            // G = M1^ . S (scene relative to mouse)
+            const mouse = this.mouseEventToViewportTransform(event);
+            const grab = mouse.invertSelf().multiplySelf(this.transform);
+            document.body.style.setProperty("cursor", "grabbing");
+            this.viewport.style.setProperty("cursor", "grabbing");
+
+            const gesture = trackGesture(event);
+            gesture.on("pointermove", (event) => {
+                // preserve the relationship between mouse and scene
+                // D2 = M2 . G (drawing relative to scene)
+                const mouse = this.mouseEventToViewportTransform(event);
+                this.transform = mouse.multiply(grab);
+                this.refresh();
+            });
+            gesture.on("pointerup", (event) => {
+                document.body.style.removeProperty("cursor");
+                this.viewport.style.removeProperty("cursor");
+            });
+        });
+        
+        this.viewport.addEventListener('wheel', (event) => {
+            if (this.hidden || this.locked) return;
+            const mouse = this.mouseEventToViewportTransform(event);
+            const origin = (this.transform.inverse().multiply(mouse)).transformPoint();
+
+            const [minScale, maxScale] = [.5, 16];
+            const prevScale = getMatrixScale(this.transform).x;
+            const [minDelta, maxDelta] = [minScale/prevScale, maxScale/prevScale];
+            const deltaScale = clamp(Math.pow(2, event.deltaY * -0.01), minDelta, maxDelta);
+
+            // prev * delta <= max -> delta <= max/prev
+            this.transform.scaleSelf(
+                deltaScale, deltaScale, deltaScale,
+                origin.x, origin.y, origin.z,
+            );
+
+            this.refresh();
+        });
+
+        this.refresh();
+    }
+
+    refresh() {
+        this.container.style.setProperty("transform", this.transform.toString());
+    }
+
+    frameRect(rect) {
+        const bounds = this.viewport.getBoundingClientRect();
+
+        // find scale that contains all width, all height, and is within limits
+        const sx = bounds.width / rect.width;
+        const sy = bounds.height / rect.height;
+        const scale = clamp(Math.min(sx, sy), .5, 16);
+
+        // find translation that centers the rect in the viewport
+        const ex = (1/scale - 1/sx) * bounds.width * .5;
+        const ey = (1/scale - 1/sy) * bounds.height * .5;
+        const [ox, oy] = [-rect.x + ex, -rect.y + ey];
+
+        this.transform = new DOMMatrix();
+        this.transform.scaleSelf(scale, scale);
+        this.transform.translateSelf(ox, oy);
+        this.refresh();
+    }
+
+    mouseEventToViewportTransform(event) {
+        const rect = this.viewport.getBoundingClientRect();
+        const [sx, sy] = [event.clientX - rect.x, event.clientY - rect.y];
+        const matrix = (new DOMMatrixReadOnly()).translate(sx, sy);
+        return matrix;
+    }
+
+    mouseEventToSceneTransform(event) {
+        const mouse = this.mouseEventToViewportTransform(event);
+        mouse.preMultiplySelf(this.transform.inverse());
+        return mouse;
+    }
+}
+
+
+    </script>
+  </head>
+  <body onload="start()" style="" data-play="true">
+    
+    <div id="content" style="">
+      
+      
+      
+      <div class="scene" id="play-scene" data-empty="" style="transform: matrix(3.18029, 0, 0, 3.18029, 102.308, 25.4423);" hidden=""></div>
+      
+    </div>
+    <script id="project-data" type="text/json">{"details":{"id":"tQEjUqmyoOyg5E49-Os0I","name":"ft_skypot","palette":["#00000000","#FFFF00","#FF6600","#DD0000","#FF0099","#330099","#0000CC","#0099FF","#00AA00","#006600","#663300","#996633","#BBBBBB","#888888","#444444","#000000"],"start":"_DQVDseNwoX100S6h1KHo","cursor":"GYNqdxkhzOa8MPCSjjVL3","doubleResolution":false,"doubleDialogue":false},"drawings":[],"scenes":[{"id":"hWOGu_-gUGY7S16k1jn55","name":"ceramic hob","position":{"x":0,"y":0,"z":0},"objects":[]}],"state":{"scene":"hWOGu_-gUGY7S16k1jn55","variables":{},"locked":false}}</script>
+    <script id="font-data" type="text" data-char-width="8" data-char-height="13" data-runs="0-0,32-126,160-544,546-563,592-685,688-750,768-847,864-879,884-885,890-890,894-894,900-908,910-929,931-974,976-1014,1024-1158,1160-1230,1232-1269,1272-1273,1280-1295,1329-1366,1369-1375,1377-1415,1417-1418,1456-1465,1467-1476,1488-1514,1520-1524">data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAegAAAMZAQMAAADxzzXaAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAAGUExURUdwTP///5+UokMAAAABdFJOUwBA5thmAABLlElEQVR42uW9DYwkyXUmFpvM7U016pqP5RKdNy73BvPyFnmN0V6h3UekG6lmMBysSxZa61IhSY0HDV6h0BiM1317rcGYLC3ykj3p0aLVGKxKeUuaSwx44/aQnitS1GotnYUxRY8pYiDYhCCtpcXBouXB2pZ0MjE3Xt9JY2FQ7fciM+unp3t+qZMOF9FV1VWZX8ZPvhfx4r0XLxn7S0xDBi4Dh4HJXfpu2BAkZlJPggC/MBEEdj/oJ0kg4+elSGUQYx7JFFOCZyDaDToMLLA12m1IoyK4ISVjJuNSukoqIaQEUyFaJ9Bog7OU0G23gegEEG3KtjRrQph4DlgM6GQhBcLBDMXNnv4OUqVKmZzKZknbCrFwm9CWBMNyN4Qlm74PiWW8hCUX6LYYdsZoz7N02cz1NdqNWYyFgVlXvQ0rWAXgzDQ7si9kvy8SMLsia8lYxgGiM6DDuuwaNBhVE79xCbahjB5Igw5Z1qcTXfZLuuysic1oGyC9zANelF1zW8wCjRYSuJEYUqOtBKxW3m6p2429JjqhRisQXN81t7+kCM18BjsuCIldxqUJPvY5Xk73eVOC0n0uWkqC9IYpoYdUIqhVRj3YYP6OHSeBGQQ88P2GwYQVSLrfYlXGvkzwfotABhCASkHf76kkdOXLBOJI+jLYX50Ej3SW7fr0QW+NhkX/crbTB2Zhgw1Wx3cmGrOQBdh2GUCdpUjQipAqsVkYAltjrMt2LE93l8EcJsAUZT14US2wIizPQTRnmVllLGMu0N09T+cISxVorsu+Hx0yiLhUYLNh4BJLu0AV12hOLQg2gtWAr240Kgp+sBFsrG4EsVJIGokFRA7t7cADl+2rkNB2LEImNRoIbfRkU8aqh8QIWU/2mo7kiHal2YAKoTlykItlD5LgbfzebzC5YrNtZANEr0khE64kmNuQEQ/yBqIzW1p52RF3AWuesdDAsvU9kjVqmElozQjcl7psiWXzCldeZjeBRggGPg9iMJmKXYOpvENytEHoJtWc0wCgCL2xyqWjvKG7ynM09CSAy3xWNeh+xwg5k6P7+Laqey2QsZIxMYLBg/oqKGkkeL+ppt9nkA9743S6VvwzKj4lY3m1hDH55bgkGLNmfghyMpxCBw8m3afnESG6NKAuu3gt/HS5ZSu2ie+bihn44Vr3l+UWnw1248YALHDXXfeVAD9dAFf1v4TvX1IsAPpB+GDi1d3i6tAI7WVO5bFwIIrRjdmDcS8VN5U19XusLAuvjmXrq/Mw9NaBykNmEwLA1mkgEkwxJpnG+qNFhKekOtxas6y5K9czvCIlrIagawHI79BElboFOgx02tLvDUzIVpQYq/7h+2d4PrldHqPf29doW088Ho7/OlXzKZCuruczyfruvDEvcvQd0cekj2ZTaIjX13SKdcv08TwxFlYrVZnoNFXzvbzmObq4uJw6XqIHJ+BEeVSWR9VrGp1XENFNnbJJzUs0m1ucC/IvXwnKPu/nfc5034DYWNUp7zU6EMgg77XpZB3BCw88/lgDO/wFTSiJ5mYLecFGJiCipl9szRJ2/p9lVxjbZDFTk3ogvXsWcU0gbZI/bJp0bLtv0i90Ddt1bfovALcqxZc2GfMVDU636RIArgfCtRNGgz0wN6DiDbWY4C+JLZiuDMpteHEh77Iv4b3woREzKRkYRefm9Qsw03vfkKbAcgWj9/xXwaQ4EDEDEo4wU0sDhUluSBm4eBcpk3SgVuV5EZRZrspVgVkKuQGNMsubLG5qNBKVQVnIPMvm+5f6+NmX9C5UnuVG0oNxIlprabSUyZpcS9ZEkfCHiyJBeSWh95dUnpNeTqhjNHQI3ZRNKRMSA6fR4yT9IsvD6B6hV3ursqlzkVRTXSpbgUwi8jyL7tBdJPo3NgzqGbkaFKm/2j+fBGVeLTKh43H6wfsFI+D19XBlHkHbesakbMlDv1bLSUNobvvAB+5H1+t6UsEMUxxpEwlXJqwXhk/AHBpPUkyjUXKwy27kY7o7/sEq2IUxDwtZzhnIrrJqRZJ8SZKWaIgGWPizKyRDWpZhNWFgxfgDMU+AnyMGjRFbXyYSdYkPq0oQDvQLJEgm7R3NWwFzB4yBJDYB5tInCfT4Wpd4cWr6IgsRDWWWrEfU32OxzgN8UT2o1wS+gI84xJKV2ay0lcyRYbVr9zY6G70NfEsDyoMt5B/KBfNADDzmNDfpjLe4G6oSfaPR6bV6nR6+pZLy5Uw6sSMdIrhA0roB8fE0ur3dn9S8hcTakrIpc/TgcszbWFrQCBoGvhCNeRodlmVTJkLXxF6gByGnbFTyfBitTFW2W/damQp0pjjl8ldwKE/QvubtuMxjdKwXnMmW5BJzyTxQpzzmGsYU5wW1FUMsfTWmFh+8OEQyqXV4NvFvEF0CnwhBRL+VqdmIT9gKHns2eeZhs5PNlKVH7aNWTcaxl6qzqmQeuLYiaRanEHHvXsyxk1g/XuuzJAjWKmupaMSq0XAzyYIfZx9FwhUBSxoscTTxe1QqJDaz3Tv7QnS7UjG1b1jMkJJXZSoAWiGcQrSUrMX2G0IyJIIBp0EnpZxgDRPGhSME54Zg0iG0ITgIJQDaAhoZMpB8BtEiNhhotJIqTfHNTCjzDUdsnAwMnDacVS8o0B2ArvLbWQdnnB9vfdQ5JY3A8pHgCZ2lnvQsk3K3F8S9ZccQ6n2neUouGn4QCO9l8LshQNbqJVK2WsEmcoxpceAanQHpGChz6UjpIFrgP6E0Eiz7Ja+FNd8GL9MM0GpxFYuKNYVu5uQPh9FScJCA6DAELxeZCB3SEFagh0NYBcEp854jseZSKYU1d6nPoUllKwWtMXpTScktFxyGxI5HDMjlPb4R3Ns4WQ98vx+sejbe7yuw6qkKck+sXpEkZy0v81MqCBLrBNRZTvhHL0BoZhGDiaSkVxzIQIIOzGsa1Axx9AJEr1K6k+87xtRVzMqxioD5wz8EWJEa1SKYLck4rs7FAiTPLLAsi7Q7JTwXykaKueF3jIQlCcPJlsQZD+DG/7T0+s7OfzkgxgnxhWfqMQm0cEQXIKEsYKAMVznPGgxpm/RaOfqbV10UkX/hF57BcxuFAKh0zuF6fhGSaXTNNJnJE1P2SZhC9P4Vnu7s/M5v4zmxnk7KrK+U6HlFabSSsqasxAJhGWYfToEXw/43X0lfe+2X/9v/ww2gkQbjQVShWObiDINctBqqAm2pxKz7vG4awt6ksq/u7+ua/4I0AFI5QWvBbFB9SQnVDsdonhgCjMTYNhVg2VevXi3Qa7NoQ6Jgdi+W6iXV3S7R6wgVfoUblhkCln3t2rUcnchZdJLIRA4Gf9eXflG2q6wVwaUUDSFD1UY0Q3SWpl/AspuHa45i2SCToil0u/1V27fMJAkCIZNg2+9S2b/1W6/84E9ezr7wBblKq5Dx5LGqRdavbNEvSgaF1KSXijKYWYrMz7Nnnz1uFP+7dPegkJr8yVp9jEYaMI7Vhml6taYX07ke8XGnGtstZS2LNEP4HuKV85fPBswffy84x50s5vE3u/pbNzhY4YYEZtPg6IYycPVL+WGoiv+lH7ARS5htb7i1RC+EEJ6wCtI1g7AnLdtlYBAnyeKlpv+XDLjBpOhJx8CLCM33CUM01k32mF7cGDkrJIXYFY85RTDgZkJLB8fEqyGvyMAyKle/+YpcbanOho0s0NSsQOsRsIlHkEtI6CLFaACxZdAixrESGQgmpaybJnKFUK+GrZ6LLNBqlisUsABIfJGO1MJKIIHXzaQngzqY0ugzRCNxI1e8pFrtppTIAp0WsUIf1yMlOi5EPKMB3LBoVHe4hYsYja6bSNfSb3WlZoFOh1hBL8ULNAldGl0BbtQ1msQrjZYGoZuiResOZIEeabya0zXXQpfmEXCkkaM5nqLX54ZCrkCyJ7RmAWIFWo/Ea8QjcSBJ6CIeCaAeEDqoI6uuJgwAWK5PkTNS05EJR2WLzjNymcygH1jgP1yhVQhdAExbI/QUVCFFXZyAVtc92bJ9Rb/HJace4srggXXy2KlaXM6TijHz2cMKNK04bnSPmqiIvb0UCTsN8qHh8IpOCC1hTkRRLGlyCnFAWugSZtEfmJR9HDpIi+yhInQDVVcrK0Hg05+5giTgyI2NRiNeacBamv7g5CkZIAmYprWxUa/T6iYtMsheE6lMrq/LfOA115tSfUr2aL1+qg1OlmXLmz0ZphmiHUxSsWSC1kQrlEqMOb/+1zdMJYVHLBEjPAAX0Y7qJC9lhOacGzJmYoxu0sLAUEoZyT8UhinX1ptNjc5X2yc1uiXDMXqm5quCat6imn+CKo/tllBrlmhHo5uEVioktJJsLV+AxAEYwaFeM43As1ax5hXkFTj3yiup8wnsta14ddUvaj6hrJxLYHw3FA2CeDyfbcBghsGNQldl5aY4VplWBM9IQb4f6K/5GZU6Myo3Sk3XHLd/GLot0wTzYeeU9bGn5yltuZif9+ZniL9en5zzgXodAMQnhN/tRrRU8yxLpQpqlm1b4BXjBZ+SEB3Hylc/eDHTcQithOI8Yp5nrVhWmHlQy8X5GTShksTQRhBf19Y0eI4WnHvJyorFLWs7A+7p6Q60BGn5sTqjQEGKWLwvlSCIVSArUqwY/Kd+6qf+33/5p+Lkmidd1+OnToVbfMxsktCKK1d6Q1AmJoMb+ULWdMS6wX/5l39ZqU/+y2WHpl4sdWl7StPZsOqWZfKRJEOhR5eq2IY4Ha+KxKwKVbGRQKUKT3tulBweV5AK8Py6yZWUKvMAqtjjFqKJRZ9bEOuWlX0x+7hqdVwvOmIJYCB6idCK7gT/mwb+4AhJLF6pipV6/Vd++Vc/rn6is9zwjhJfPG/eW+OrgU/oODHWsC4iiP1A1pzEtKyf+smf+qj70U6cHIUWAEhsTkkvlvyPxgzjGgzRbM5gNfMY4Ulrl8z6eCDUw3fOMLaRd5HBrClmekRJ6sFH7YLWOSjbPXyUhJyawzw2aycku4o+SAk85gF4nmuTCmimM/HinmKgwHb9vqZmpOIzZFfBmdl2TTe0Ec25pWiyGKs2ZqcpD7itrALNnMlcbJeT6mHNOEx9AwBbWP2ck5L77CZgzdTY9wGAQXFal3m+5Qprig8fMr9bXFsMdMoYsAaywqOiabhkAGpK6YjVo6qLh8gWvFTpHNLogC5b8Iej4Thh55HQ/jHovtXn6qF9dqR5o7jf3oPB/szdq8+g+0e3asINzz3CjABTNhvLZKEMcGSfe7gqTKO3eCwMFEO0fLfy08wNSJbVh555INwsOoabpyBfwJ16XdcdLPPhejirKJtujjfRIT6iJ4P1xPMsyqLmk9unTvmxxdlTJHgqNBdPZWveOYYJivvJ6d7FoLseSEsfq7EgTEomUN7MHDTDwzQNcAA/phWHZ4UCVOSB8lfKZYMV+94UB3lTNbFAlx0DsMoz4AE0kBw98Hx1ihXjFCKiCXOgIMjIesHYX1/UY6dnW/wsIrxH7411fL3wEWZ5zPW43YgavgeztHUskSmly6aq+ODatudFHEDXyeqss890XlxfWu/YcQJJIoNYQiqTYBQnoxTSLFZKl02TBid/Bvzjdj4ZgMzYIFNZK5OuFJ4wpATlpZJJUvWncZql982J08NSlUHVrM5XyY/D035doXezR2gOCq+bxscOdD5jVZvQZhU02pIS2t6wQ2gAL/OyFNQDLL5VVl/M0bFQfWw5dFXWCqSKLYAMEP2gm7PIirITsklyKltlTSxbAEDmxekDzQB5u80K1Tx3fwuV7jXBATIFWxoNx7W7QFelFKlGqzTVaAGAJXuEdv2jxqQGoRerCxUTDWixGOX3O6X7rUQCACncJo7S/nbPHxrD4FG52YX7y4YfyqrjEZYlJlgPPG4VC3M4enblHezigCXU0UGuuRqLbeSTZPvqKqKtgNVZwnYAuowte9vlEkwyxWjlpliu75tGU8+gdp9+leTqxQR4kDEZci6DsT8LZ5zQBrtfulHK85RGC0MwxT1Lo8kGvRpscFRcqiDgG4qrVal4MEIDTyLXZZaCDGQarnneMB5JSXqveJ17lSyTYRCYkjVlj8smCfOiF/MQ/6vTlxBkJskUImW2YRJTpa6UQvRFJFQty9Z8p2O7TPqSaw8YX0jF2/gfaZSEQrRboHuK2CLzctv6ZrL+QpYZluNwmzWFpLI9cmhUfFtKjxwUhQSZ2QVa5mhfo/vKWJ9/hdCG5KwlpStbPbqwVG4ozxC6J2RVo6tTaJcaLoRpZlWD0KQhWw6kHSxvQBAE0reVPI3/KVzEV4LYjbcq2puHZNd4SwaBgXDDzIz4FcM6h11b0DhpZHLFLfng5SYNkDAz2Bi2bRpMMIsZWsk1kRgIXSnQFcZE5Qh03bZZpUDH7CErlceXNMDVIJWLR5Id0kncn7aQ2P1S72C592Ax8NXC9uAecoWy4zgJkoy8PxZTGSTkDQzqIpLRLSn6lwIy2ud8Ycpc0nUkMHMw4GQjdoWUrsiIFp208AaONZpLYWaK3E2CGIraJQlPhICY0ES05GjhishoNkPnZuHPm3kF2kC0tyVFVMN7WZFBX4hA0oiJ6JPtMdo3Ws22M5xFn8vRIDcgRjoyE2EK4Yg4ADAv31vuthAdx0LFUaXV6jqZdiIBN4OLa1kWtOK19wOmPD1BYTNkP4hjRwgDwMwyp91ZU4meCDKj02k7ZNeLBdhYtoGHW9LIajkafELnZZfosGeQaTxH90Lda3oemKBdlpJ6F9yeLNGOBFBZ5qgJGjV0Smq0BA6qQFOfj+IgAJAbgQqCfpI4Ak2KsX/5sqNo8ohpGsmC3JSPPRqAADUyRqPgXNy/pCYOW+p+MVnfyPQoOf+wzrUguMojuG0Zf0W8io/w6Jzha1ernULtfACSbTHOX8czyH/k2xPFd3A02nJjYAxCk7GYWwFL2V0+YB4bMMX273OPu7+3+Mw/KZZN6GsajdSZ1AO6pWpRySDZoLsslSQW5sGltSA4mayhh2Nle3CS1Emp4ncHryu4Fnr+G2QDla5EFkYm3ML/ezSSu0ozITeIuJeJxIjtlolp0yzg9wbKuxb53l22JmPhJnG91dp2oqRgQls1kY3OBQuZJPLrNzTbOdstMrU7weDelvpuFHmXyeKhB4BOJ3SinIWbiF4lUnaM99c041QKxuk0Ce0MBtnW7/ayeJijpWYER+U1X8WaGzk6I0O+0DXXjLNaorPs5SwbsrUgFknea5jRnhSAEctEM0IQXJJB4Ig1ZBxXM44Rb6E55fXXEd0i9OHxVjAmYYaUjSlfWvmQFSFZzGbR5tQyPYCHiFB5eX5/UbiPQOdOoTwKNZEVmpqkeebM1fDiw1fG9Xqm/QndULCY7BvkaEbkO7/Vv8hZzBK2hq/8JMkc3mOKvcTulCb8TItczL2C/+WdWPpY9/vaGEiCVlbIZec5WRpD5BJtTA/GB66wFLaQBWU5f15knJGYRT71EbYgxHfvnFegyRHysgyyTAahVHLYSuN0K81EUKz5Ll3kvIXkwNdE4mdG0A4j2XAbm0qFLw3urAeCvWEgQyTSUyFKhGmW4Z+QPEe/cSnoKynEthOLKKvLbrsfNbyGF6t+eHnQEYLdRZsL8oIXeiGiEYto0c7RV99w+KstIfi2jLPYqLe7UZ+8kVUc9rPLnXWsuWGQu7uHqUBHY9vcd686Qa79ljKLDCNsI2NhwpqHWdbpCDbM0eABoqlkRBeDFL/4XccRrxZoPElh75AyM0cHgWTDIICYphOAZjNGJtjygpzehHrttYAkNES/994/+kcBOS5IMhDhSILonDDGm0qwFjBFrVfPahlM5I4ozzwDYJjlifRaWADGfL9El85bC4XlvqIvU3TCM89wbkyh6eTjVi/qAYbAhyf/PrVwPgq4ud9V4bqi9wuQL5Vi5zS1Cl5nlJXUXHFRu1oF0nVfIVs3Ge091yXTOPV9QFyZo50C7eB/VuYr/TVHF36P5JfiZh7p1QmuXcBAu614Y/Q+ThFWxsIx+qb2Shkw8vQKNKeamr+08zCMvBSzcs4p1ZEbfP/y/mUrytpKBVJevCjlULmBWx/EAgVsGUTIUlaivWixLhIySCEFz3HW1adl72Syn+xbftYNlUrkvYtNmW2RKf5yVcgE/0Fek3Wz1WyRIy8TAKBi5YHjrKyvflou84QnVhS3t5WSycV7q80sIlP8HZzvpJEYUVyvG1an1SGHfo0mDQ2Wba5UV6XDOedWFoWhUlRzYzWNcq8UQYUnxC1GHb0xyameFTZDpRzHNKtVTceORZbDiznaSJXUXim59z1xCzagp53qScUPAHGzubY2N2cY0qlTIuvOa69J+dprc3P/RTP3Skm0vyPxlja/k08XKagZMMg3FEzcGplh5j+Z5jP3D8njyce+H625pW6bZr2ubVbmEf4pj0f4x2oOivdqSfiPh3b7OdFXifAN07K2kcV8tou8MmK7wfY2eXz0TSF2EmEF29+75N/qBkHsb0vtbWzWcqKnTOhdPdzvIuUD25W7u+Q3cZHQtgC5u7ynuC1lpnYJHSDxT/y0CG0hGxBaFOi4RLvSkruwZ/IXaHWKh4hrjWDs0yrXgr5vNUw/9LHMAOJdsWtJGcuLSSzepyXRrrfb50LKzLmEaEIYzcL5/JyUajdshKYKw7u7JK4gukJLna9clCKTkhuW2r2IaKNa3UN0kiTGwmrufN5snZNqL5y3bLMV7t1tihrsxvE8rRmuanRTENpwpDSqlT2Z+7cYRlPn1VZLqr3W/LJpt1p7e7JZq12W85a0CC0QvdoNrFSjNw2Leo3snoXfu2EU6HnTJLQja7U9YVkyFgXasJWV7l5EtG3EhCYveVqWYzaMc+dQAAtMc27uIqZ6YFnnEB3IOP5SX8SXAmNutTLa7tcDOWc4u0FlTPZyWu467IGlvxvH+twGs36IR/nfM/PYhcHTJs6Z+fioIPAF1P2uAMsHv5uLi+QsQu9CWKxuju2SucmkzrbFRIulROyogQAQllIz6G0hgDnz48VHjnbYYIwWUonMSQfadBL5OTrO0RaVzWkXZaEeYBva/DAQ9tj5xe8jOi6kzTRYOZWsiI1Ta6caSKEbwalYVRx/g6fBhlRv9ILGGzyIlT3e5fBdhehy00Mm1zfFuuhtqk04tyZ7ctNRJor1kMmeVF+WEr4cy6oqvVYNYYgsmEIr8hUjx1zoKFJ+EdqUFg3jisSjjMtM2WoKfSXNDqFfmkFbEjJaO0zQhXhAWt44VmO0UKq5LmSk0cjz6oV18wWQPFsJm+tvyzV4m9Dj+y1iAY5fmjVeSdaaqyuBDH0FL/nIeGp1xTzBpXjF2lhd6Uij0sFeW2UMfv+znz1iZUGuqoYQTIAgQiaHC6IAAxgzQUgGk21MjSPRc2YimKho9BzTytY1YxH/BxGUaPgP5l74oa3Dg6cBrx25uHoktVpuh6p0Z2XHx7eIqbiRJHacNG1y6l6355IzSaJUknwyOXPmjDWZJg97QOjOdEzLNCxwWhYOkk7HMrQk4hjGJ+kDwuB8K1jpVIL+Zuc/XA6m6q7R1QItNdop0NUCzZg8/6psnatI8+z5T7TkYW3DSRQWHMtycrQs0BVJaKprrzZ/+nRVndh0q39zyTmMVmYlRzPDMHO0YbimNH46Rzuby6dPO+6JTeV84iXncLslWkgIrWguJjQJBL6hDFmgldPpnHPnX1TOPzjbY+x7tPoco3tJT6P7zOg31j5jrfl9o8+TU0bcy9F+fXl5q175qF//+6+8zLZYH2b8I2aGei175buzj7QFsQYjP7wnQr/4ZKopY2XJmJt77gkZyrCD58y5R5p7qNbG3LQff5Q3zDrcVGNa1VF8jVmXaB5/qjG25m8hSbH79YDHoSdbDmJaXtZm2rAW/a3lYCXYXNvsYXr55aDXy/cO9YIzqJk5g6eUng+fBjeOzOD8lLAsXv1US7bky6JAy16+W1f25JmefPXVTSadCdpcMeXLkzWfE1Q/sXT6dG85dh1HyqWlniP7vRM94/TSCXdpednos7EcEiMaJW5jst50lp3/vIWE7yAFO63W0pLjLJvOC45x+sUXlgg9JcV8+hA6Yrib5O/9g1Zr2XFeytG9c7KyvNyb6zjLy3gpY3MKbX90jpYfk7Jfrjh//z9bXl526h+t11dWarXeVqDRy/Vlp4arg+maH0L7bHHpSC3p/eLQ3IlKfrOmVxpLn35EtLFQKX3W/mIUu3cP/9B9dGyyuztK7t7yE3HrbtJ97z1LxIMYAscRgRUHMrklmJHWc63s/a4XsLsLcpeHhrhiiQGOx0IOsoHW2Wu38StCOCij6Im3PeZAo+AHvru7hehd49RhtLCkkA6iJZYNDRaQIqtSoE8IHL1f7oovWamxcPJ1Y/NkQugFQo9QzZuItVjIGu8HzRQAQialr1k8CFroDHtyKai82hVnET2/vGfI5d1k4LwwT+2uytVVKVoiSCyOy4c4Bj8MpKyvBEbE5OlPt4Sonhb+/KeFZSHa2TNecHblwDmxJ8UAQBqGFK2+IWqOIKVURVkdo15tyfqQydXT6MiLtpxw/pRGW86ucUKjjV0p3iA0NjzErsS+lwYMDBV0DKPakgaijdMvr6+faH32/Hxb5ugQZ7BdmTmE/nKOlmEoSaOsEC2VXM/RKa1LXl5bq2+eXK7xYGEhNqy6j6qBbflK3dgOaOOyJFVHA9st6sI3oBv4UkhZWXblxUdcK8wOvrQpmT62nwhN8V3o4+Hs8gTLDX7qUWeVNZoBSdjHUrwGq3iWYHUy1PusLlm1ut3d3gbeUEoANwEajDtLjlJdpQCYJPOpSfpqJNsoZEZk03YsLF9xR7JaLWyHIXDv7Nlum5u1mleg2yXaYL5wt6jsKFw3Ii9k9Q3G6goM2bVtFSpVD9x2u41mD9t2LY7jr+eHajMCZiB6ToRBVaO3pSGsNpYdoJsrVOJutaqU2qw6DSVC26s1Gh5w1z3vee3NyPfZWuzV58+2z1RX6p6jhFwTS31l0MLY9BuiUqvJqNOpLnln0RnadaN2g3Pf70PUjdbBZ1KitSMKzxgtN5L1jQ0ZbyivviGt+lokJFYV0a2qU9YcPOCcb3ueWN/0NVp2InXaaJlR0+1JqZYUWdzrhkJ0F0BGslUPOPKJrrlrYenc84WKsN2EdiIljRVTrboUxcIiM6VrGArpsUBjeUKImuu225x5iFZKqHUAFgQqoBMdwxSGLWXgWT5tRTSkD6TEmkLr+82ZW6BV4VtD8qdTxUvQMh5CxnMvi0f0lqvTDF/xzYBWCEhNQq+N2V/QnPGUKfegt/LNLsAALFCZJQAATLPL+zJNM59zplLI4ARkChjY1CL8ihwl+qIvwGJl2AHLPhsBof1Kpe0qdfNm5jcazEu961kNsi1gvneLMd/OwGWxDrnAgLWhDcD9mlVr+1wBQIRs5UVogsjA8wBuElUAUUYUEt/WsljvQseMndwAH/wwsq2qAEACiCi4V0O1sywG10VThIcngL8FDLx1BhHEmTTkhsIsAwa2D76bgQ0CrAh8H8yFrtvvpkMAvq1UptsVUa1srEDcgEyuxb0+ZiGZXUN0FY0opLfYZD4guu2pdnqT0JOyYwBrE8tux9qET4Y8IVgNagCm3w7bbdCet9jnYSMK0xSAc2o3ROBHUQYRxWICyOIyCgTZK3SH41/jLOgtE4huU4AkjcY+V5C1o2wrA99aYMyHDOSq7CnMRMyT+527qY7vt0aTOz28lWUqA8gPYxfZ8UYfc/BEC99ix98T7C0sffxsciSEWQfuYy5mHVvKxFkwjwPFdNyHRDNCWUWAcgtKvlfL0oJPHmiuX+RA+3Il2rChFVDCdYkg18h6EeowauMQEgxSXU7fUEaeSb2n1VsBGsRpS6HQsTaEZbMwj0RShpAgK0XKpC2ZMvIAJrQLLmEiEAG+O5KNI4EIi8UsFJTLYAg3GWUdSKLQxMqmIFU1BT0JBBerenuikBvJhmVDo60ol+jhDyhjIAkmSy1wXhCFPZF95N8E17MUMkX2qDe7IeUSrU14GQaSYBMFNG1OJEscvvOXSEElE72+IXR7m/IETfbDlmxO0M08WoqOrcfzcCl5InSoU4lOsxQzVpeppsrzKiFpi6GQgjfFlFJ8DUApSjk2iXO0jpG0WmTav63JHvF8daxS1+uRImhEHkCCsTQPYiTlmM5ymrPt5eXpjfCmKeXy8iHqhGkn+5zgc6p03fV1/XuQ07BlBcH6en5WktiYktj1SrRdFuHSdg3z/l0Atn2/dd69j4mYC5rHbH3BoGACcvy2aWabPVct6ytbhfJ7GbMOcGiVjtOxvgZYbmF5pCyLcwMMopIy4HQ2/bK+vL6sdeAQ2zESfxxIFthkNLTtwB6VMRCKc/HS62mxkaSHma2z9fjQDnepN7eT6RBm0GxdahsmWTIZhkvpbOjdjuXO3SLrCEM6dArEEE8FP2FSpQ4NumnKMFxKq5fSXkfyd+rFvdjJc1BMV4EEfih8iVKOUhn5M2v+KvcMkk2nzfNs6KApFDrlKLSniM3YVMiTVIqe6OVBUyZhU8rAKVPBT5RX87wj0BtiIw+aMgmbUgZOgbpUtC+3RA8xMW2XLPcrah7ls2FTysApFJNIi+R4BZq6iOkOeXCL4xWZJHAsLx+iXCR+151Fa2ZIyqvSO9ijxHPPbK2vT4b4h6xG7OI/4lDL5Jy4d7qqprnMVKHPVDqUSql0M2zGXPsjaMFumevrNuvQHG3h5k/Nxcvatt2aX2ckbqYMmHKB0cbzhIlqwzaYzUy3I1sXnRYAheOSstMho3WCZa4vX8Uj+w4wpmheoPAPqc1cWoYLFrqm7TJk96tYtON5OhxXHvQsEAxZdF0fibw8gEqR8bqkaucNm6zytkXMXjdZwfS5d49giZWwezTjmeUIl9OQgQesBG0jMuAUnsvtYw5svQ3e1tktAnTt9PM5Sw+uqedilrTZE8xenEqD67nNxGy4ep5zdZZGX7POzkU98rN8VgEbbJCWxTFLnsm1LoXnolipZHefzhSeq5/cuUfv/QLt2Z4NTcjDBXGcJjhtgU8uYpZl1r8UAbt2dvQHG+qkXOXCKtdxVKQzXG1yzbmXMJezZFM7GjTFTM3zOUZvCDbyOCqyroxVLmlWPo95dTbnAbqw4vQ5TbTyoY60R7MPlFYLHEKDYDyT3C8ZEQNNI5dLcGOKKSbfEdCY3bfUGMNXVhiyQL4dJbTlmCl0hIhGfhk3BCZYu71ZqKZCZBLbXllZXj51ioFrWxYFvbLcq05L7beIWcACboXryz9DYa8sDlwAfGlzjxFDWcgkFlSdmmsB8/QMBpKBySK2ZO57FC9Fy71s/WfJKwvILx5r/qU95POUZqt1HTBHB+pMdAw6yWJLzyYmc2P2M5ThZ9hr+HsL9tgeG/I9donmEJlZUz6nNFdQBLrx/neaVX72Z/J88WeIe/aKtLunpCeJnVaLxLQrI4CU5ahMs8prP5vniz9LJ1/ay/Punieh6UmvCJjYbDKKATGLxnzxtTITevdSmUHCKshJ4Cw2DtY4gx4njR4naIKBr+a47Ptr/iD0qi4dLfx5YhQDQodJiadyf5xo5tg+X2YsOQADjOUiPeaiQhaiygwLNBpHM8Xs77iope2ywSMZAVdWHvx9dn1ChD/9/6lTk0LPnt3cnHyfnPu9IuWE/wc6lUzwTpGAu8oLLXilSPlxBLFORrlazQm/PaBcMkF5jOvIUWC5NPwp2gxDx/EY0yd03nknr5MGlyriQ8cYUxq+uTk+iuo38v7rZIWYAINBu71RpPIY5wC5RkKR15/Kz8WjiMbDeFJOuHXUU12+3CvS4uJnPvOVr3zlMxM0+QsqNz8XkWyxSL5OZdjF8nieJug8jY+y8gwxjm76JGgpJ4EbD6Ndt6rT8ei8J/JWHEbbdkWnhSLl51YqlWMsd9OOWY9v93ts9DQTPIghDh+dZgrbnmWIo1hp6uiYQWz7ZUwWuMgQtl0yTx7HQejwbNyyCvYpjxK15kRvAQ5U83gmF9yCkkE0GDindwCwZtmHeKzcIbq0tPRy+f9hBplN46NZp1PeXhM5KC1SySCrq0GwsUER+KRM03IOKY9i2dkYjeyXFalknmZTyl6P89xdsBzHy6NsTKSIxjRBlwTs+1KW6PLMkrWOQ1eK1GwKIeX9ZefpYeiWjpDsujm6nEPGaDyjXH8QeqtI5fHlZeovLQwFW1vlHDJGPxLZP9U+DmMimhXq0yI9wbzxIMI/hk1kuQfxxKHtmLPzRs4mE0YgRbh14kTALq3bNrNPnARmnjjxlc/gKLyyzA4Tfs4mk+9BYjE4eZLZncy1mHWSJMGTJ9uDTiarNXbcvHHou40DowQG7KNF9+FXztnheeN+NtHJxSEyn/T12RpNTiOH5o372UQnOUbrs+v1xcVE2wdmR9/72aTQEtHpUALKso9DT9hEp0SX/djogi/ko6HvZxOdcrRVAhYXc/RjjPwwmSrKrxMNXp7uZwStpZ5sMdHOzJOvmitmS3kcIRAsdupiPP6C5Lyhv8LDddQnJGt1VlifvfTiyrL+YsEJ/Npa+n6rA5xZKyuX1i+tx5Z9lAP/ySCR8tQWi13luPoLWCfPsHSJgm9awODUKaL4ozZ7e2NraQymCZOqpun8fGfs/IMpPcLmREGOyk4mr1Iz9+2WUinTrLJibZ+jj956MI0e3z/PM3UknDHJp4dcQ5Pk4OBYNH2F49EPKfsQulLZOgadk/MUutc7Au0dg85ZKY4XFnSDaMIleTVHa4apVKrV20ehR0f5Lwn2sK10D/J+EtPr+hkOOZRGT2kgtBh7kMN8cvwC6Fb3D0llZ4e4/2lMx0pZ7ichJJfTjHaQEC+bvq/OXS7C6rm9T+UtHHySbDKw5bIQgPF8M87VAm1y5bZYXkFuDff2c3+1wC7Rd/5jHceShcyNYz/XU4QhhBlegFngufN5f5fooM9AJma+X+7W4J9P9W7sz2oMwQJ3XlebAbec+ZS9eH6D+cy2jtK5xLnWfBzuhJuRSxK4CQFgu6sX45PnN0gDWKA/97nP3V/2ONwJla2ja6iAwjA5u6Z3fsMu7QaM4Yp6gi7b3Xp5PLN7Ofo2K9FBP2EyKSqHXp8FGW2xcZ9/6vdKrWgRHAgUE3qHqelR3I/ALjxqP/ShD43pRcer9iLG9oZjys502cCYwHZT2aQmZW7+gA12+/btggHCY7c8yUNbQB7Ra0SV7roP20DCH88BBYvfWOW6Ek6WNRj0/b6OOc/vv9B9AYeTBFivqV0QsYt/L+w2hLDCENjkQTtTzsJBXGcqvqXOGYEccTumntpeyMv+3H/3qyFvoAtLA9GxgMORbRotKRym5EDtrUkFvt56VegCA/apL2Qhb1shhH4cMwHu4ZGGdvw9s3kwGA0NEdqbtYMSnbsGsZD3rZCHli77PnQkxPZnR/KLarh6t91wrHHZSkqi9cY2bDc4hblhnLv6v0kvbkSf/iz/iSj+49GwKe6BUxmXrVqdGVrP+bsbhlO92D576tT2J0fimhrKu23b6UzK7rQKWp9Gcwume/Fsu83/k3VxNRpKETacTjxuN/ZaTusz6IY11YtA++3/03WRbe03pYJz+2Lc52CxnNZn0CKc6sV6HLQ3Pq7EJXUZTY2wNYW2jpgiGtv9Bkx6UTvo7cxyCTxJpKegHP9n1hYHpAZLbMYOMD+EdRorbDoUXTR0L7ium1xwhfcMuzDxWm8fLZ1t3BrPiMBYNJQXXJlcyNGMbW4G34DNzTWfs97ZfYB6YsPgvUHMiodYrIg/yUaL8ZmASY/mFnlBSvfCBck1+urVTgdIG7nInME+1E0ZeffefiNlnX3035adqP9SNm+mrmQKyOMWgf8Vm0K3gfZQGcCcnX3YNh3fG7z95bcFopcRzbqtrGalrsHCAn3hF+gNCC3Onm1D++xZUYW689Y+55YB3hvD3x1eRnSV0NuIXkxltdH2CvSbY/QBfFj7y/iLdWftN78dBJYJ3peHv/32fmc/qG/EMXNZ5JmprFhdFeTon5uU/YKHaHcJy5Yq3Hccy+Re9rVv78uN/bDWaZ1iAYvaFpZttbVtDpv8s4S2dLspILa/tCQNkMpDNBjbkH3trX3Z3ledjoqQ2Px2fUsaVqgjLFGfT6Flpwq0GwsCdW1fqXbvWuPt/UH6tkYjS5sMrhgeRf9WOdrVaFOjm+tBpa6agQ9mM0Q0rzfX1/cH8TfasXI62GvPMRgZt7FDpOozxojWWELoScSsfDqYZoYrzJhsTHDuo/OEsVm0P0Pq4pDj17+OpGcXcePWrSOPLpJPiTGe6ZKDEX6F5FlWmeNMcNFu44h8g+9wAW60r/aGv7i/uzcUQZwWE60cFGifsU5nXxoG/GSBbgvOES5u3DiEls5N/M5CZDUo0c8gul2gGbu3gWUL2BZdQZ53JfqNdmcohKOFBHVmUYARLYZxI2Fr++1O+xyhf3wtWNx3hBDbXRCwfvLk+jS6JYSTUdnRGceP1yLHNS3TbyLaMwwD9ls/WZvf74TxBipA1195/513OoR+w+sMf3GXO2N0mKwJbihnxTRNv0VlI9rb3/tMbf5blZpB61GwSP5nJbooOyU0NkpyQ6mQ0DLK0Wp/74pXu1K1TNLD2hWtU5pCD0u07Cl5hWILm/M5mvo81WheNfXe2tp8id4Fp/UTRZ9rNEUEFslufzNZNuPAa3dGgZGk916N49oalkplW2ZZ8zE6CWKNPlLMuu//R0vTg/j2Xx0Px3LTGFiGuF9ibFDoozgOjtxkA7Sxv+A5k9CVBmObL+Dkasz/NXoDZrBMZpL5DKaDmOr/8beig0WSGKJvVsOD3dd/evryiD533eCRCa4/NcLQoj4az9nrjjKEZX7kIht84Z+wnOnwDYK1H2SdoSHAABltLwjDcbnpRm7kKA4mgKMc5bor1TBHb3/74kdyNFEgkMIU0SP4PBxAd46b0pEyhKqvnI9DCvDx9BP7pzvY6mpo1f7JF7oDRL+hiG2QhkDIbFw2tOfBOjj4V7904B/A3ecP8HrR6POjz//RAfa4oyx3e6H9I2GV5UxXoqndYEZuZMF8W8mwGkbVSJcd+QI5UXaWDOy3pZib1j9sVNiuh6Q7rjn1OdAWbJPPdV2F7cYe1O32gZu0SbtuCG7WOWPmj9C6SBM+Nt4P1tLx/QZDLGyXdwws5jMolstYc+R5YMz40F8dSp7dlftQiW6G1l0mlKGOYG+Y2l82dUnXKIVV2vV/nh/cPlClQsBjW6Uo6pOJPZ87fQ8AivCCLx6Mjadgmd8Qk7JreP6wvHIUF3OrxzxFwUA8/f/fycuueQzPGrkjrkzFLcACP2p5zLv3MbA+dg+sDCCzgDFQlndb+1bsjlKkeNOr6SeImvRyBVNMCfMjrss/ZXquN/iRHxkIg5sQY3fC4Ecatyued3s0un370k7rdsc1kFIFA8tgYOHpVPZo9Plk9PnayEu83Q99Yv/gIKzGIMBgV579e96fU7V9pf78W0vegXsw+jw7OCB2AEu4Zt7u9M2P79SeGV4Yfvdv/I3vCuNf/RJk/xT+fjb6/AXvwm0f0bdvX3jrRFE2I3dqo+aN/s7oQB2My95KtvY/8aHdj92TMo4EMyJdtmKehxf482uvKvcb1G4a5php2+JFKvu2KVz3Iq+V7QaLm+BzMPFbw6t4/tZW7G1dump47Pz0/eauxbHdFgdmQY3UkRZ87J4FhWWL+ty3wFNK+Wo3HQFzDx6bmH0K5xM/eDfJoyXzibaSWKXX+yH0pC7JZ5Nj0bXqEv5502FWZYMlIwNGzNKM5LqirIzxnVyfaQJ4uYemG4Eb8bGaACwmQ9+YDyDN0YnrclLv6k2OTqq15h6At3QYDUuR3ai4UihjvumlaG/r9xmioXDTZKa6qt8Bat7JAu0nCT9P417U6pxuz59JhGlUW57iXt2s+YjWj3DhkW2b7v+5siUszwPb8yC1JaKjr/7eq9+4RprFg4ODf/z//boUwVrSUkqE3KiaiDZjAADfDazf9MJMAIQASKXKlTn6a9/6FihWlE01r3aUlyQB/VHZcQwQuxQPH9Ecy21QmCBZoF+89o3Zdju91BuXDQyAW75tDwYDrLnAotveWR3jLm/39vlJn7thaDhBCrxsN9foiDHc1KJnberza4h2x32uxvRiNxrJSIwg7/PifuunVulbkzDLpPudgrQP3+9pJW5OLZ9Njqe1thu13ejKlSuH0GyMfuCkEZ7l4TVx/DNS2NPooY9M3mEd6CyTNSZCUm+2TBXBC2cLhcPCrYVbNG3V2gBTHgtdrUPs9c7hW3ZpqkyfaGwrAlPzXMNu2NWBzexGfXtKATHQY1eWZd1z2aVM103fMVAexN4mLV/NZOHWjbkbc27oAkBD73VB/sGzeoge9c5dunQ5yy6h6WDGR85XLIIkSXTJDTt03ahht2sNBsSL3W7lFwZwjmUZA6hc7mUsOHOGdBQvndOPro3ihMUWs5Ibc9TuQdX1EWvrdt+Jsb4/V+VZ79Ll0WhENR9NTeuFKYhBkmi3O4AQ2aBh17cLt2tEN6v8cqZlHKo5lp1MlR1T2QkDbDdefoTt1p4wLgOXmapS6bIqh0t0aFS5zLKRPGxmiBlPSv9E7HNkTGzQhEYrNuTyFYM4v2H5uJa7zmuxhif68iPGXKD7HT4WTfIp9TwAPP0zd5/sYYsT9MKtxTuHJptHvVoXydXOvSdNUZr2jkcT8Qoh2lFbCBwfEHlj7rc/TEFBLF4NCbkWU9abEcZDDDk75egYRI5WV/aZSSTXsE1u8u16TRsKBUokwmjJDtPhZ7WbFAlaRDXCBMjRobq6T2VTu/MnG9o2lZqjUTOTJMJIZKS21lW0FSv8R2l0P25HG2F89dvU7lsLdxa3F7YXTEFrGULSKzn9KrbGkDKOoyjaiqjoKKIpoi/Exqfbcfjtq9TnxHX6OSrMtgUi83Z3TnfwEomUWOTmEWW342vfZu7KytyND/+2yc+/6Lo1T2gpDK9lYbup1eTgcmS72+1r1xjWiso2xHw7iqohlVo490qZfxzq8xIt2leusfDUKWo3GVfCEKz8XpOUVTyoWiaH7jfEU/d7TKmGmFCK9Rf10OknTQu3HoFpUj89+kjpSjxp1hHr9FTdj/ZolLkxl3cOoRduGTsWAKNF/Fw3VwXSAOSlaXr4WRygH+bYsEcjExmJ7iMyhrAgYIaY6544Vbj9szFabx+iqWSx70fgAVQH1O75ds0jMr4xd3dtsR8xk5841WuijAS+B0oYSqWpZ6MQfvYkt8IUuKkiP+aWG1J9z79o24SmspeiN1h/sdc8ceozr766BYSeI7Sy/Thq1wAi5b10DqmRIiq6o1HDtmB7gdCLd6qDVicvGxfLWDbJJWJel818D8v2PFd57XlCc2tQpX7bXrDt8pnvS1He7nI697xuNfVSbHfu066Yp3TZMc0+txao7PMvEgudw7TYz/s8H38QA20nRxe3MvYUNyMVeRZ3Q7uxcItqSmWTSd6C6cetQawgTlJI1fTdx571I88U1cHcDbrfNY9Y6DIm64hxHNHHPPwhd2OvhhaUM8nj8NKtheNlnicTvmDKBj97nAcBP7TQ8Vm8xlhl+lE6TE+0VsJIK8wSNsq1ugy4SehyfgFXMW9EQ111gu5PmYH0DBvsaLswG1ljtMzRQ+anhC6bfFCozBcX0TeKLYo7aNFjO6tg35wpO9Cj4sGQKTVB3z24sMY6ucoNU50nFilVd9SX6HmqI56jSfKhETlyY5H5OTpO3/2t733162dYBBkAl64gjbMlXcMc7eVPntJlP3fruVuJS8Q/cj2RkanQAEhTn7/95oUv5+0e5auRhD6DnWxZspu0IirKFm6aqhTLTt72CnS8BW+/+fUv53dspmy0Dkm25fu6bOpxESDb7VO70yhHM3Zz4XtfvXAmXw4X7eZFu5lkuEznY7RMR6Coz9WwRFOvHaxRBwqz6PNF3eejX2MJg5s3x2Xr9Gt0v32khXgNBo8g8mO7D+/4zSV86B7tEfLQpf8PYY3BHtnXBY5sH9mX1Ow5EGshlLhGfwIKpPSmX/TDiJjaj0dspAc9PT5YFLLphl5CpGmWpuCb4rXvpClAmjJ6Az9jI3Lkoq3svkr1RIelAyjmg82c6K0cnQ3T676y+N7+6+8R8NfAx83z0fVRlo00mkg2izISk/1sTbF1z7XVF3c1epQOs5tRRui3v9yu7e8p8G8OI3gXsuFNHzLaz51ez65nkIKvsjZjN5sJU/94dEOmoNLRzWGaDUdY1Hdeo7bvQzQcRqOs+KBhPr2ZZSkoquigy77z3asJlv2WVJCXnWXc2t/LyyYYFQqRrgJLsd038SRQsUJ0xpqezXajty5Jr2h3pAidt3uvbHDefDYC5t9MVQbUe9mgwk4Cs+/6N0YJQN7nvi/M77yW97liWd7Zft71lK5jnyPaVxG22+bl/R6V91uY5f1ezX8ZlbedUor3W98sf+2hqxI4npceYT54OvShdO1uDrMsxvlDgk8cMdHt2qSu4pYVcN63mMtGPrDRFIORmS8fe4Az8P1pLvz20NdCrGVxzmkXMUsVMC0olWq2hg6/wtjlUZv5St1BiYr6nSLGOztePI0mn0Rge2/n6EXtiYR3w2TswjDbZe+mo6ubJLGBx/zU38u2vpg7kOboLjv33jl7tKe8RqBWeUOtrnWZioPumdPDzK3E6c33zsdrnvIUU6lf3R0OYQptJ9/PLttZ9lkPZNoUkDYtfjuNFXzIHGbvn0ACz5TykLlGcZo2vj0avjuNnmPu69hr6bc+CzKTfcjkoOGN4vXtz/3vWPbJeDisDpWXqhGV3ajuXp8t2/ZSsPcz7/uEFpDJtud7/srgTRfbzd/NshaiKUd+yvfeSd+ZabcFChLsubTWy5q8hq8G8yB9679/Bfv8D5AZlLp51wMPGEu5w9JYg6HocwAfrNEIUmtja3XR2lpl32a3QX3qU18o7reWI0ZkLxmxtaWYzaAnZFyu9G+Us8bRQhWAqSsezMZtEBREFougFQQcfO4BC/aCzC39+GnQL9RcaGvEzjOPrp22FhB5K79CiX4MX8nSP5XmDZ6M0YnQQwr9jSAxrIUbZEO/gTb8Kzu7t7rdLn65MYNOuWSS0Af60byTZBit+Ss7lK5cGSA6/w/XgrNoxhLIyxYijmMf/ALdmf+Vdv/ub9/5439269ZO+8aOEG/hc5xn0FpVOCjRFIbdjyBHy/lfOdseXLv21ltYdntnh/O3MCG6CwAVgIMC3Z5GRxEuAjR66Z/+4hd+71/8ya9+/w+/efvF17e++1v/yzvvvnt/2dNonPBQjNfo0x/+sR/90aUf+9GaZVqmheF8q1X0wppG85SxpDHV7hHNJHnN0/l/F03oP7ZQN80K2sPnzefn5+fZIbSUGn1Q9Pmo7HO5YTz77LPGc8+ahpmXbRjmM7Noei552ecJTG64kST8A4T+wLPPVTTaXPiA8dwc6wPk1DZ+Jubj0BorqBxYt5D5NfrghyNJgT15lcXZNoB+PSWaCB/zre3tW4PujTYODcGikcIoZXMz6OmmTtBXcurfETuDwc6VLrviyiqis5sYE5BcRx9c9rW3zt4d3Dj7ve5btwbi18QYPZyb+3QWTlBHo9+6dnZwbefsQKB1gb/1fXYlFISG7AwQ+gBP+X18fRVfz2O+g3Pj8/bzcMemT/Y7v/7Fd5Pf+eY/b5754pnvfb/HroUcUPEJwy6iXbQY2r+P6K9+lbHnMd25c/fu1Cf7d5D4f+zf+7E52hUxX5PMqsJAQgo3u9DOXDbV7rLG0/7hf+3FH0Xu+fAJ2gZVqY/RWXoGb0B1ut1HoZ9D8n32R5/VOzcssyctl2k0o+V29WFlP/Pss3PPfmjuGXJCsZ7bSBZcuIPo0WH0pK+n0Y9Oaz98NP1EP+rP6aU9bZDXn6D/0R/6Ql6pPvL+bUYjvSLRg333zl1254MH9II7zx/Y5BxCn3jkefw8wO/sz8A+8J5nH0Nmed7723c07SPRI9Xj38FD0p/9GYkV8DEOdy16Z7aus76XRU3tmVs65ma7qDmWjaV6f6xr8Nho5oE3ftjmv61ob/Kl/AfgmZ0LWn6ytchnl9PSweje3Tu3bux8kA0PDnC+unM02sjjfR+L/tSnPvXY6IPpstnxaJO796MPJujhp4ZPgZ6U/cc54aEX9YH3L/CPMW5ZYBP6jv1B9kHkoIMCPN3uHI3k/rc5/LFF8/0BgwP23I0bz4Fl3yEc+yA6rx5ACZ4t+84Hac1WlI0F6+JJ2Q2WXUjtFPjlfrRut0YXzZ00HRjjOnrUNPrgmLKfBK3bfSxa6B2BU+iDxyn7MPrgEPrB7d555sID0eOy79w5OPjgBz/4sO1cx2ykfCC6O9bDzc09Orp87vn22G9zYbxJxX44WuXuXf2QsZ2dAyTDxWr+7CTwKehPmUr0qNC2kAohSWL1/POEjlW3e+vWAXbhmjM3t7Dgex7FZ3hZJudekslLL43RtCmRHgr1ru8nMlZrTuDadiL7p+5+KSEzm1w8sbYcqyhzL7Cvv3nw//z8hYOf/3l28EHs+TsHiL4+Go729oe+R+hYBYiOVdIcvUZBftacpDf6zii9fl1euPD1rx6BxrJv3qSyseZ37yYycPshlU1Rjhark7Jz9MGFCweHyt7P90FRrxF6u03tJvTC/LjdRc0PoYt2l+iDC4mk+72zQ2Mx3e+iz4teS6RMWIme6vP8fh8cJIkQ+ZBv2xNam7ljBfoJVw5Ph9a8+6inpo+GPkYO9K0nRgODGOne1KruCtklRqxRIXSjwljAniGG0B3v+f59+yMz5v+tNoClTRLINOlrKe7l+o3f+A1tY5fsAzdGn/ffe32UZoiWdBXtpJGIJAkCQ4lR1AEAxQKXVeM4fW2I8tWFN9/U678L7Llb9z6m3nv9z1/L1PmNCxk9hQ1fyunKxA3m4A9hqEYjHvrytFlBvfSeRv/6rxfoD965+zyi3389i6bQYbVN6Hn/AGLL90RbSdcCPLSXaTT7dcae2WEXnr9754OIfu8rWYzo99//ylfo1Z4PZRIEVUgg7Xo+b0eu22j4cZrlNWdv5uiP3bv1HLb7O9/Osve/ciEvOUu7c4qM4I5ikA2UqrWUK8Pw9vX0naHuNfYb2sIrPz+68QH23usptun9r8gSTdZ/RCcZa6cDxipN/zSh03Q/1XeM5k+0TQYHB9j+gllGQdnnk/vNY+S5+kvMDRqNkqMODh55tf3MUZT6yGjxSGrj6PF5jVro+1AHxrwZKg+OD/E62ZKeGj4bKb/qs5hd70+dImUCPgXYZgZPo5ichX10lKDtMannm9rhc21oKC9TUAX23vXsou+PbueZffWrv59tvoDVYsvbWSIzltTVXRYbO2Q2iasa7Sjztoq9UX3k/+b1YS1SJfo6Dp6qGirlL7R4FslMuo4aBtGzbbLUjyj44BxzfGt0PY/r+/3rw5XsT8b7095884+A0DA3f3IUSZBu2/2mjH7u7BKDdBQjh584cDLIvDhu48dvXs82s/fJd5heVLany351fjmLKPgwrw1l9JNhRGWf//FvfcS5eOImv+5l0Ihg9LvX34mu/0GJHr351d/Hsn1f7VadzBdgu+bK0I14SKH+Rq/++7/2IWd3bihiiMH2IbuRjSrvjin0+lff/CNsN4DaTbCCAlx3Phqeidot0p6PVjXaAOFDBLUI4L1spCKfCBn3It6OpEx0n6tdwwWf0Coasmj3J5ZYOhrVcEhfu2MM14hYyLQSx9l1n5Xo6xS3ya8D+NuG60ECduK730gi1pomyZtTBHv9IaRs2OwDsyaL6aH+oYTusZldh0+YJtEj2WSDGJlnhfbzGEeouI9VTD7P0tNnTtsmO53QO+QmT4+ZdqMh5AsesDKiE0vkZIZ+7/WbcWxBjakzMnFX7eR0srJmwxaL6RGirvlhzxPNk+DZ3ymS/Udv5gFOyLvoo/9sq10jtKefk+viwLfy2cDPtB7TC01wV061ViJ47t133/3D0bujm+b//YV0f58CGqo41mgg93odT8eluSYJ4syLvJGPZYOztNnZ9KP/64vf/ObXvva111878+YfleFVRqOla1GOHtHWi2UtTKzZI7JsoGEEy+6dUWfcKP5vBrtfQoXxYAfROgzkcG/4p+9qNDfb9HBJ1666CLYXgxFSfRqPhm59+733VOtFiG5l2d71vWGW7vwP/2Ne8hita05lO64uO4g9FcV+HLHgTrMZdlYA9rLrb2dv06T1q/9zurc3pCeUjkbjdqsiPEuSO714AOBDEtxZWGj3NgGiMlTfxn/9vxXhL8teoz5Pk6nkA/j0CuyuaXYl9zyrXiTrz34uv990x8b3+wHJ0EEKSlpL5BG09sgpCNgPOx3auNvN89yZPD/kO/Ng+DRob/gUNa9tDWnXkMU+cvFDu2a+iJq85ubOnJl+HTrOasOhMCRe4OPpRy4OHxc9//Wv41Ty+VFCb7/02DXXZePC8+PphQudfAGYLwGP+kS1ONaA6qE/Eb2F1cayP3Lx86PocdHe0GPFcv0jFx/fMXwIxR4T9qHdp6W1f4PSmcck7ZnvT4l+uvQwUn7w8adDP2WfHyLdM49D6k+J/iGn7mOkHzb6X2N6XNKe+f6U6Ke/RU9O6k+LfioumSLxxyb1p0T/8Jli7lHTU6L/UueSx58Dpr4/Hfqpb9mTk/rTop9uZJol8ccj9adEP3XNj0pnHik9JfovNR1Lyr7v47ov9Yb3aY/DR0CrSNHazxsqxUaufWLlow2yil5plOgH6urI1zXT6C1287T7QuuTIe0e77ZLdYV4ECkX6GjobX12GHInRDT3PN4eP8Y6eQBaxzdEdORF7jB0Cf3K9W9+4/r/arGtpqJlq/OAmqMX8vURoSFys3sxLlz+YHd4bTh812Ku41CIEofdT+Ll5+GyP/nJMKQnKWh08DB00e5h5G2VaP3YEbKJVJUpDcN5eJ8PPbXl3tTo1lJRdlyTpjRMhx1PxOQlqTRaJSONVt89c+blM1R2v2fK2F9jx6P1vrF0NPTSWX/6p3F9txqPi37+7vNzT8NI3bv3u/jDo6mq869U46ldAYYBue3F5KY4Dg1+EORfqbemjKKGmYDFir2M5MXfOKZsdRS6ZklImOHocJ+Oo2IrSSpJs4Lkv1FJ1tZ6SZwldpysOWN0HJvgA+8HDrNtCTYr0EHg0CNwTUtqAqZAqlXDyBzLNGS1RINp2jHEsWVmCXgmeDl6f1+pwHVNRHdco1qVbkd2Kp3q/hKhT5Zo3/IaChquFSgGoQkhMxx477133pFSmRW3UzMlqxpGy8SSlTTeobLzQBvAoQHQaJvQ9izTohgeFFbCAXoCQ68nzaopTVc/AFuaCusvjVSjtYLJ48AZ52ABcMsExvEfrHkvvouJ6WdYS9PEfoz9zwR9I042jHs9K4njXl52A5gQADGHOMALWTwe00tQt6ZUW/m7eAzqZ0+DfmJvSM4esmXl+EpwAB67TsIlxNWYA5Ku4Qnab901DB/6SSzbIknk7D63Mbq+uGa6VYPLRegQSVBYKmUwMGzTALAMhmgplyvezSPQybYTmok0YscBGfOY0G5osJioFhLLiDXaaMBRGnnE7Jqua7pmB1mgAYFrmi5SFLhdcOOqZZgK0RT/9k+PQi+alokIz6yACR6wmmU6XdOLarZbg5qVWGZHSQrFe1TIXOcOecrS831MsMAFZiHnKsuN8JoWgGVYFqLJWfwotAQLTAtqHCwOwIHVXgYZgsrMrqwRGiAKJQBjoyPRACZwh7iAUuJYXLa5BMNOnKplGZyfaie8e3TZFxEUcyFBcCHwxaQl0q5IuTEnZcUk+/ugK4VgLH4CSjT+4oj8/wf6Ohqek8gi8gAAAABJRU5ErkJggg==</script>
+  
+</body></html>
